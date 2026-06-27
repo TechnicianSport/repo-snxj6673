@@ -45,6 +45,31 @@ double SprMapGet(int ticket, double def)
   }
 
 //=================================================================== //
+//  Combined new-order gate (addendum A.5 hierarchy)                    //
+//  Order: terminal permission -> market liveness -> (callers add the   //
+//  spread / ROC gates). TP/SL execution is NEVER routed through here.   //
+//=================================================================== //
+bool TerminalReady(string &reason)
+  {
+   if(!IsConnected())    { reason = "Waiting: terminal disconnected"; return(false); }
+   if(!IsTradeAllowed()) { reason = "Waiting: AutoTrading disabled";  return(false); }
+   return(true);
+  }
+
+//--- terminal permission AND market liveness (no spread/ROC here)
+bool MarketActionable(const string sym, string &reason)
+  {
+   if(!TerminalReady(reason)) return(false);
+   MktLive ls = MarketLiveness(sym);
+   if(ls != MKT_LIVE)
+     {
+      reason = (ls == MKT_CLOSED) ? "Waiting: market closed" : "Waiting: market status unknown";
+      return(false);
+     }
+   return(true);
+  }
+
+//=================================================================== //
 //  Cycle slot management                                              //
 //=================================================================== //
 int FindCycleIndexById(int id)
@@ -85,6 +110,8 @@ void InitCycleDefaults(Cycle &c)
    c.openPositions   = 0;
    c.lastActionTime  = 0;
    c.lastSwapDay     = 0;
+   c.blockReason     = "";
+   c.prevLive        = -1;
    for(int i = 0; i < DCA_MAX_LAYERS; i++)
      {
       c.spacing[i]        = 0.0;
@@ -233,12 +260,16 @@ double PlannedLayerPrice(const Cycle &c, int layer)
 //    nearest-skipped-layer recovery fill (Section 6.4). Asserted in OnCycleTick.
 int OpenMarketLayer(Cycle &c, int layer)
   {
-   if(!g_masterEnabled) return(-1);
+   if(!g_masterEnabled) { c.blockReason = "Paused: master switch OFF"; return(-1); }
    if(!SLConfigured(c))
      {
+      c.blockReason = "Waiting: Stop Loss price not set";
       DcaLog(StringFormat("cid=%d cannot place order: Stop Loss price not set.", c.id));
       return(-1);
      }
+   // market-liveness gate also covers the spread-spike recovery market order (addendum A.3)
+   string gateReason;
+   if(!MarketActionable(c.symbol, gateReason)) { c.blockReason = gateReason; return(-1); }
    string sym = c.symbol;
    double lots = NormalizeLotsSym(sym, c.lots[layer] * g_lotFactor);
    int    cmd  = (c.direction == DIR_LONG) ? OP_BUY : OP_SELL;
@@ -279,8 +310,10 @@ int OpenMarketLayer(Cycle &c, int layer)
 //    so the caller can flag BLOCKED_BY_ORDER_LIMIT and retry once room frees.
 int PlaceLimitLayer(Cycle &c, int layer)
   {
-   if(!g_masterEnabled) return(-1);
-   if(!SLConfigured(c)) return(-1);
+   if(!g_masterEnabled) { c.blockReason = "Paused: master switch OFF"; return(-1); }
+   if(!SLConfigured(c)) { c.blockReason = "Waiting: Stop Loss price not set"; return(-1); }
+   string gateReason;
+   if(!MarketActionable(c.symbol, gateReason)) { c.blockReason = gateReason; return(-1); }
    if(TotalLiveOrders() >= g_accountMaxOrders) return(-2);
    string sym = c.symbol;
    double lots = NormalizeLotsSym(sym, c.lots[layer] * g_lotFactor);
@@ -327,15 +360,20 @@ bool PlaceAllPendingLimits(Cycle &c)
 //=================================================================== //
 bool StartFiltersOK(Cycle &c, string &reason)
   {
+   // gate hierarchy (addendum A.5):
+   // 1) Stop Loss configured, 2) terminal permission + market liveness,
+   // 3) spread gate, 4) ROC gate (fresh starts only)
    if(!SLConfigured(c))
      {
-      reason = "waiting: Stop Loss price not set (mandatory)";
+      reason = "Waiting: Stop Loss price not set";
       return(false);
      }
+   if(!MarketActionable(c.symbol, reason))
+      return(false);
    double spr = SpreadPips(c.symbol);
    if(c.useStartSpreadFilter && spr > c.startMaxSpread)
      {
-      reason = StringFormat("waiting: spread %.1f > %.1f", spr, c.startMaxSpread);
+      reason = StringFormat("Waiting: spread %.1fp > max %.1fp", spr, c.startMaxSpread);
       return(false);
      }
    if(c.useROCFilter)
@@ -343,7 +381,7 @@ bool StartFiltersOK(Cycle &c, string &reason)
       double roc = CalcROC(c.symbol, c.rocTF, c.rocPeriod);
       if(roc > c.rocThreshold)
         {
-         reason = StringFormat("waiting: |ROC| %.3f > %.3f", roc, c.rocThreshold);
+         reason = StringFormat("Waiting: ROC %.3f > %.3f", roc, c.rocThreshold);
          return(false);
         }
      }
@@ -716,6 +754,17 @@ void OnCycleTick(Cycle &c)
       return;
      }
 
+   // market-liveness transition: the instant a symbol goes (not-live)->LIVE
+   // (weekend reopen, reconnect, etc.) run the SAME full reconciliation pass
+   // as restart/disconnect recovery, since TP/SL may have fired over the gap.
+   int liveNow = (MarketLiveness(c.symbol) == MKT_LIVE) ? 1 : 0;
+   if(liveNow == 1 && c.prevLive == 0)
+     {
+      DcaLog(StringFormat("cid=%d market reopened -> reconciling with live orders.", c.id));
+      RebuildCycleFromOrders(c);
+     }
+   c.prevLive = liveNow;
+
    // 0) account-wide order cap recovery: a BLOCKED cycle re-arms once room frees
    if(c.state == ST_BLOCKED)
      {
@@ -732,15 +781,21 @@ void OnCycleTick(Cycle &c)
    if(c.state == ST_WAITING)
      {
       string reason;
-      if(!g_masterEnabled) return;                 // master kill-switch: no new orders
+      if(!g_masterEnabled)                          // master kill-switch: no new orders
+        {
+         c.blockReason = "Paused: master switch OFF";
+         return;
+        }
       if(TotalLiveOrders() >= g_accountMaxOrders)   // would breach the account cap
         {
          c.state = ST_BLOCKED;
+         c.blockReason = StringFormat("Blocked: order cap %d/%d", TotalLiveOrders(), g_accountMaxOrders);
          DcaLog(StringFormat("cid=%d blocked: order cap %d reached.", c.id, g_accountMaxOrders));
          return;
         }
       if(StartFiltersOK(c, reason))
         {
+         c.blockReason = "";
          if(OpenMarketLayer(c, 0) > 0 && c.referencePrice > 0)
            {
             PlaceAllPendingLimits(c);
@@ -748,6 +803,8 @@ void OnCycleTick(Cycle &c)
             RecomputeTP(c);
            }
         }
+      else
+         c.blockReason = reason;
       return;
      }
 
@@ -776,7 +833,9 @@ void OnCycleTick(Cycle &c)
       return;
      }
 
-   // 4) high-spread parking / restoring
+   // 4) high-spread parking / restoring. NOTE (addendum B): this only cancels
+   //    not-yet-filled NEW limit orders; it never touches the TP/SL of open
+   //    positions, whose execution is broker-side and never spread/liveness gated.
    double spr = SpreadPips(c.symbol);
    if(!c.limitsParked && spr > c.maxSpread)
      {
@@ -802,6 +861,7 @@ void OnCycleTick(Cycle &c)
       RecomputeTP(c);
      }
 
+   c.blockReason = ""; // running normally
    ComputeLivePnL(c);
   }
 

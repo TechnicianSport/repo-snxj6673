@@ -20,20 +20,40 @@ CycleDir g_uiNewDir      = DIR_LONG;
 
 //--- layout constants ------------------------------------------------
 #define UI_X        12
-#define UI_Y        22
-#define UI_W        470
-#define UI_ROWH     24
-#define UI_TITLEH   22
+#define UI_Y        20
+#define UI_W        790
+#define UI_TITLEH   32
+#define UI_STATUSH  24
+#define UI_BLOCKH   70        // height of one cycle block (info + reason + buttons)
+#define UI_ABTN_W   112       // action button width
+#define UI_ABTN_H   28        // action button height
+
+//--- font sizes (clear hierarchy: title > section > row > log) --------
+#define FS_TITLE    14
+#define FS_SEC      12
+#define FS_HDR      11
+#define FS_ROW      11
+#define FS_BTN      10
+#define FS_LOG      10
 
 //--- colors ----------------------------------------------------------
 #define C_BG        (color)C'28,30,38'
 #define C_BAR       (color)C'40,44,58'
+#define C_SEC       (color)C'37,40,52'
 #define C_BTN       (color)C'55,60,78'
 #define C_BTN2      (color)C'70,90,120'
 #define C_GREEN     (color)C'40,120,70'
 #define C_RED       (color)C'150,55,55'
 #define C_TXT       clrWhite
-#define C_SUB       (color)C'170,176,190'
+#define C_SUB       (color)C'180,186,200'
+#define C_AMBER     (color)C'212,158,48'
+#define C_TEAL      (color)C'55,150,162'
+#define C_GRAY      (color)C'120,126,140'
+#define C_BLUE      (color)C'78,120,200'
+#define C_LONG      (color)C'58,120,205'
+#define C_SHORT     (color)C'208,98,60'
+#define C_KILLON    (color)C'34,150,74'
+#define C_KILLOFF   (color)C'185,52,42'
 
 //=================================================================== //
 //  Low-level object helpers                                           //
@@ -55,7 +75,7 @@ void UiRect(string name, int x, int y, int w, int h, color bg, color border)
    ObjectSetInteger(0, name, OBJPROP_HIDDEN, true);
   }
 
-void UiLabel(string name, int x, int y, string text, color clr, int fs = 9)
+void UiLabel(string name, int x, int y, string text, color clr, int fs = FS_ROW, string font = "Tahoma")
   {
    if(ObjectFind(0, name) < 0)
       ObjectCreate(0, name, OBJ_LABEL, 0, 0, 0);
@@ -64,13 +84,13 @@ void UiLabel(string name, int x, int y, string text, color clr, int fs = 9)
    ObjectSetInteger(0, name, OBJPROP_YDISTANCE, y);
    ObjectSetInteger(0, name, OBJPROP_COLOR, clr);
    ObjectSetInteger(0, name, OBJPROP_FONTSIZE, fs);
-   ObjectSetString(0, name, OBJPROP_FONT, "Tahoma");
+   ObjectSetString(0, name, OBJPROP_FONT, font);
    ObjectSetString(0, name, OBJPROP_TEXT, text);
    ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
    ObjectSetInteger(0, name, OBJPROP_HIDDEN, true);
   }
 
-void UiButton(string name, int x, int y, int w, int h, string text, color bg)
+void UiButton(string name, int x, int y, int w, int h, string text, color bg, int fs = FS_BTN)
   {
    if(ObjectFind(0, name) < 0)
       ObjectCreate(0, name, OBJ_BUTTON, 0, 0, 0);
@@ -81,7 +101,7 @@ void UiButton(string name, int x, int y, int w, int h, string text, color bg)
    ObjectSetInteger(0, name, OBJPROP_YSIZE, h);
    ObjectSetInteger(0, name, OBJPROP_BGCOLOR, bg);
    ObjectSetInteger(0, name, OBJPROP_COLOR, C_TXT);
-   ObjectSetInteger(0, name, OBJPROP_FONTSIZE, 8);
+   ObjectSetInteger(0, name, OBJPROP_FONTSIZE, fs);
    ObjectSetString(0, name, OBJPROP_FONT, "Tahoma");
    ObjectSetString(0, name, OBJPROP_TEXT, text);
    ObjectSetInteger(0, name, OBJPROP_BORDER_COLOR, C_SUB);
@@ -90,7 +110,7 @@ void UiButton(string name, int x, int y, int w, int h, string text, color bg)
    ObjectSetInteger(0, name, OBJPROP_STATE, false);
   }
 
-void UiEdit(string name, int x, int y, int w, int h, string text)
+void UiEdit(string name, int x, int y, int w, int h, string text, int fs = FS_ROW)
   {
    if(ObjectFind(0, name) < 0)
       ObjectCreate(0, name, OBJ_EDIT, 0, 0, 0);
@@ -101,7 +121,7 @@ void UiEdit(string name, int x, int y, int w, int h, string text)
    ObjectSetInteger(0, name, OBJPROP_YSIZE, h);
    ObjectSetInteger(0, name, OBJPROP_BGCOLOR, clrWhite);
    ObjectSetInteger(0, name, OBJPROP_COLOR, clrBlack);
-   ObjectSetInteger(0, name, OBJPROP_FONTSIZE, 8);
+   ObjectSetInteger(0, name, OBJPROP_FONTSIZE, fs);
    ObjectSetString(0, name, OBJPROP_FONT, "Tahoma");
    ObjectSetString(0, name, OBJPROP_TEXT, text);
    ObjectSetInteger(0, name, OBJPROP_ALIGN, ALIGN_LEFT);
@@ -121,114 +141,171 @@ void UiDeleteAll()
   }
 
 //=================================================================== //
-//  State -> text helpers                                              //
+//  State / direction -> text + color                                  //
 //=================================================================== //
 string StateText(CycleState s)
   {
    switch(s)
      {
-      case ST_IDLE:          return("IDLE");
-      case ST_WAITING:       return("WAIT");
-      case ST_RUNNING:       return("RUN");
-      case ST_STOP_AFTER_TP: return("STOP@TP");
-      case ST_DONE:          return("DONE");
+      case ST_IDLE:          return("DEACTIVATED");
+      case ST_WAITING:       return("WAITING");
+      case ST_RUNNING:       return("RUNNING");
+      case ST_STOP_AFTER_TP: return("STOP AFTER TP");
+      case ST_DONE:          return("DONE (TP HIT)");
       case ST_DETACHED:      return("DETACHED");
       case ST_BLOCKED:       return("BLOCKED");
      }
    return("-");
   }
 
-string DirText(CycleDir d) { return(d == DIR_LONG ? "LONG" : "SHORT"); }
+color StateColor(CycleState s)
+  {
+   switch(s)
+     {
+      case ST_RUNNING:       return((color)C'90,200,120');
+      case ST_WAITING:       return(C_AMBER);
+      case ST_BLOCKED:       return((color)C'235,110,90');
+      case ST_STOP_AFTER_TP: return(C_TEAL);
+      case ST_DONE:          return(C_BLUE);
+      case ST_DETACHED:      return(C_GRAY);
+      case ST_IDLE:          return(C_GRAY);
+     }
+   return(C_SUB);
+  }
+
+string DirText(CycleDir d)  { return(d == DIR_LONG ? "LONG" : "SHORT"); }
+color  DirColor(CycleDir d) { return(d == DIR_LONG ? C_LONG : C_SHORT); }
+
+//--- the activate/deactivate button reflects the current state
+bool   CycleIsActive(CycleState s)
+  { return(s == ST_WAITING || s == ST_RUNNING || s == ST_STOP_AFTER_TP || s == ST_BLOCKED); }
+string ActText(CycleState s) { return(CycleIsActive(s) ? "Deactivate" : "Activate"); }
 
 //=================================================================== //
-//  Config dialog                                                      //
+//  Config dialog (grouped, readable sections)                         //
 //=================================================================== //
+#define CFG_W   560
+
+//--- draw a tinted section box with a header; returns the y just below header
+int CfgSection(string id, int x, int y, int w, int rows, string title)
+  {
+   int h = 22 + rows * 28 + 8;
+   UiRect(DCA_OBJ + "sec_" + id, x + 8, y, w - 16, h, C_SEC, C_SUB);
+   UiLabel(DCA_OBJ + "sh_" + id, x + 16, y + 4, title, C_TXT, FS_SEC);
+   return(y + 24);
+  }
+
 void BuildConfigDialog(int cid)
   {
    int idx = FindCycleIndexById(cid);
    if(idx < 0) return;
    Cycle c = g_cycles[idx];
 
-   int x = UI_X, y = UI_Y, w = UI_W;
-   int H = 432;
+   int x = UI_X, y = UI_Y, w = CFG_W;
+   int lx = x + 18, ex = x + 250, rh = 28;
+
+   // overall background sized to fit all sections
+   int H = 40 + (22+2*28+8) + (22+1*28+8) + (22+2*28+8) + (22+3*28+8)
+             + (22+2*28+8) + (22+1*28+8) + 44 + 60;
    UiRect(DCA_OBJ + "cfgbg", x, y, w, H, C_BG, C_SUB);
-   UiLabel(DCA_OBJ + "cfgtitle", x + 10, y + 6,
-           StringFormat("Config cycle #%d  %s %s", c.id, c.symbol, DirText(c.direction)), C_TXT, 10);
+   UiLabel(DCA_OBJ + "cfgtitle", x + 14, y + 8,
+           StringFormat("Configure cycle #%d   %s %s", c.id, c.symbol, DirText(c.direction)),
+           C_TXT, FS_TITLE);
 
-   int lx = x + 12, ex = x + 200, ew = 240, rh = 24;
-   int ry = y + 34;
+   int ry = y + 40;
 
-   UiLabel(DCA_OBJ + "l_layers", lx, ry + 4, "Layers (sp:lot,sp:lot,..):", C_SUB);
-   UiEdit(DCA_OBJ + "e_layers", ex, ry, ew, 20, SerializeLayers(c)); ry += rh;
+   //--- Section: Layers & Take Profit (2 rows) -----------------------
+   int sy = CfgSection("lay", x, ry, w, 2, "Layers & Take Profit");
+   UiLabel(DCA_OBJ + "l_layers", lx, sy + 4, "Layers (sp:lot, ...):", C_SUB);
+   UiEdit (DCA_OBJ + "e_layers", ex, sy, 290, 22, SerializeLayers(c)); sy += rh;
+   UiLabel(DCA_OBJ + "l_btp", lx, sy + 4, "Base Take Profit (pips):", C_SUB);
+   UiEdit (DCA_OBJ + "e_btp", ex, sy, 120, 22, DoubleToString(c.baseTP, 2));
+   ry += 22 + 2*28 + 8 + 6;
 
-   UiLabel(DCA_OBJ + "l_btp", lx, ry + 4, "Base TP (pips):", C_SUB);
-   UiEdit(DCA_OBJ + "e_btp", ex, ry, 90, 20, DoubleToString(c.baseTP, 2)); ry += rh;
+   //--- Section: Stop Loss (1 row) -----------------------------------
+   sy = CfgSection("sl", x, ry, w, 1, "Stop Loss (mandatory)");
+   UiLabel(DCA_OBJ + "l_sl", lx, sy + 4, "Stop Loss PRICE (per cycle):", C_SUB);
+   UiEdit (DCA_OBJ + "e_sl", ex, sy, 120, 22,
+           (c.slPrice > 0 ? DoubleToString(c.slPrice, SymDigits(c.symbol)) : ""));
+   ry += 22 + 1*28 + 8 + 6;
 
-   UiLabel(DCA_OBJ + "l_sl", lx, ry + 4, "Stop Loss PRICE (per cycle):", C_SUB);
-   UiEdit(DCA_OBJ + "e_sl", ex, ry, 90, 20,
-          (c.slPrice > 0 ? DoubleToString(c.slPrice, SymDigits(c.symbol)) : "")); ry += rh;
-
-   UiLabel(DCA_OBJ + "l_dspr", lx, ry + 4, "Default spread (pips):", C_SUB);
-   UiEdit(DCA_OBJ + "e_dspr", ex, ry, 90, 20, DoubleToString(c.defaultSpread, 2)); ry += rh;
-
-   UiLabel(DCA_OBJ + "l_mspr", lx, ry + 4, "Max spread / park (pips):", C_SUB);
-   UiEdit(DCA_OBJ + "e_mspr", ex, ry, 90, 20, DoubleToString(c.maxSpread, 2)); ry += rh;
-
-   UiLabel(DCA_OBJ + "l_sspr", lx, ry + 4, "Start max spread (pips):", C_SUB);
-   UiEdit(DCA_OBJ + "e_sspr", ex, ry, 90, 20, DoubleToString(c.startMaxSpread, 2)); ry += rh;
-
-   UiLabel(DCA_OBJ + "l_swap", lx, ry + 4, "Swap L / S (pips/lot/night):", C_SUB);
-   UiEdit(DCA_OBJ + "e_swapl", ex, ry, 90, 20, DoubleToString(c.swapLong, 2));
-   UiEdit(DCA_OBJ + "e_swaps", ex + 100, ry, 90, 20, DoubleToString(c.swapShort, 2)); ry += rh;
-
-   UiLabel(DCA_OBJ + "l_tday", lx, ry + 4, "Triple-swap day (0Sun..6Sat):", C_SUB);
-   UiEdit(DCA_OBJ + "e_tday", ex, ry, 90, 20, IntegerToString(c.tripleSwapDay)); ry += rh;
-
-   UiLabel(DCA_OBJ + "l_roc", lx, ry + 4, "ROC thr / period / TFmin:", C_SUB);
-   UiEdit(DCA_OBJ + "e_rocth", ex, ry, 70, 20, DoubleToString(c.rocThreshold, 3));
-   UiEdit(DCA_OBJ + "e_rocp", ex + 80, ry, 70, 20, IntegerToString(c.rocPeriod));
-   UiEdit(DCA_OBJ + "e_roctf", ex + 160, ry, 70, 20, IntegerToString(c.rocTF)); ry += rh;
-
-   UiLabel(DCA_OBJ + "l_slip", lx, ry + 4, "Slippage tol / deviation:", C_SUB);
-   UiEdit(DCA_OBJ + "e_slip", ex, ry, 90, 20, DoubleToString(c.slipTolerance, 2));
-   UiEdit(DCA_OBJ + "e_dev", ex + 100, ry, 90, 20, IntegerToString(c.maxDeviation)); ry += rh;
-
-   // toggles
-   UiButton(DCA_OBJ + "t_uspr", lx, ry, 130, 20,
+   //--- Section: TP Cost Inclusion (2 rows) --------------------------
+   sy = CfgSection("cost", x, ry, w, 2, "TP & Cost Inclusion");
+   UiLabel(DCA_OBJ + "l_dspr", lx, sy + 4, "Default spread (pips):", C_SUB);
+   UiEdit (DCA_OBJ + "e_dspr", ex, sy, 120, 22, DoubleToString(c.defaultSpread, 2)); sy += rh;
+   UiButton(DCA_OBJ + "t_uspr", lx, sy, 150, 24,
             "Spread in TP: " + (c.useSpreadInTP ? "ON" : "OFF"), c.useSpreadInTP ? C_GREEN : C_BTN);
-   UiButton(DCA_OBJ + "t_uswp", lx + 140, ry, 130, 20,
+   UiButton(DCA_OBJ + "t_uswp", lx + 160, sy, 150, 24,
             "Swap in TP: " + (c.useSwapInTP ? "ON" : "OFF"), c.useSwapInTP ? C_GREEN : C_BTN);
-   UiButton(DCA_OBJ + "t_smode", lx + 280, ry, 150, 20,
-            "Swap: " + (c.swapMode == SWAP_AUTO ? "AUTO" : "MANUAL"), C_BTN2);
-   ry += rh;
-   UiButton(DCA_OBJ + "t_uroc", lx, ry, 130, 20,
-            "ROC filter: " + (c.useROCFilter ? "ON" : "OFF"), c.useROCFilter ? C_GREEN : C_BTN);
-   UiButton(DCA_OBJ + "t_ussp", lx + 140, ry, 130, 20,
-            "Start spread: " + (c.useStartSpreadFilter ? "ON" : "OFF"), c.useStartSpreadFilter ? C_GREEN : C_BTN);
-   UiButton(DCA_OBJ + "t_spm", lx + 280, ry, 150, 20,
-            "Spacing: " + (c.spacingMode == 1 ? "ABSOLUTE" : "STEP"), C_BTN2);
-   ry += rh + 4;
+   ry += 22 + 2*28 + 8 + 6;
 
-   UiButton(DCA_OBJ + "b_save", lx, ry, 120, 24, "SAVE", C_GREEN);
-   UiButton(DCA_OBJ + "b_cancel", lx + 130, ry, 120, 24, "CANCEL", C_RED);
+   //--- Section: Spread & ROC Filters (3 rows) -----------------------
+   sy = CfgSection("filt", x, ry, w, 3, "Spread & ROC Filters");
+   UiLabel(DCA_OBJ + "l_mspr", lx, sy + 4, "Max / Start-max spread (pips):", C_SUB);
+   UiEdit (DCA_OBJ + "e_mspr", ex, sy, 120, 22, DoubleToString(c.maxSpread, 2));
+   UiEdit (DCA_OBJ + "e_sspr", ex + 130, sy, 120, 22, DoubleToString(c.startMaxSpread, 2)); sy += rh;
+   UiLabel(DCA_OBJ + "l_roc", lx, sy + 4, "ROC thr / period / TF(min):", C_SUB);
+   UiEdit (DCA_OBJ + "e_rocth", ex, sy, 80, 22, DoubleToString(c.rocThreshold, 3));
+   UiEdit (DCA_OBJ + "e_rocp", ex + 90, sy, 80, 22, IntegerToString(c.rocPeriod));
+   UiEdit (DCA_OBJ + "e_roctf", ex + 180, sy, 80, 22, IntegerToString(c.rocTF)); sy += rh;
+   UiButton(DCA_OBJ + "t_ussp", lx, sy, 150, 24,
+            "Start spread: " + (c.useStartSpreadFilter ? "ON" : "OFF"), c.useStartSpreadFilter ? C_GREEN : C_BTN);
+   UiButton(DCA_OBJ + "t_uroc", lx + 160, sy, 150, 24,
+            "ROC filter: " + (c.useROCFilter ? "ON" : "OFF"), c.useROCFilter ? C_GREEN : C_BTN);
+   UiButton(DCA_OBJ + "t_spm", lx + 320, sy, 170, 24,
+            "Spacing: " + (c.spacingMode == 1 ? "ABSOLUTE" : "STEP"), C_BTN2);
+   ry += 22 + 3*28 + 8 + 6;
+
+   //--- Section: Swap (2 rows) ---------------------------------------
+   sy = CfgSection("swap", x, ry, w, 2, "Swap");
+   UiLabel(DCA_OBJ + "l_swap", lx, sy + 4, "Swap Long / Short (pips/lot/night):", C_SUB);
+   UiEdit (DCA_OBJ + "e_swapl", ex, sy, 120, 22, DoubleToString(c.swapLong, 2));
+   UiEdit (DCA_OBJ + "e_swaps", ex + 130, sy, 120, 22, DoubleToString(c.swapShort, 2)); sy += rh;
+   UiLabel(DCA_OBJ + "l_tday", lx, sy + 4, "Triple-swap day (0=Sun..6=Sat):", C_SUB);
+   UiEdit (DCA_OBJ + "e_tday", ex, sy, 80, 22, IntegerToString(c.tripleSwapDay));
+   UiButton(DCA_OBJ + "t_smode", ex + 130, sy, 150, 24,
+            "Swap: " + (c.swapMode == SWAP_AUTO ? "AUTO" : "MANUAL"), C_BTN2);
+   ry += 22 + 2*28 + 8 + 6;
+
+   //--- Section: Execution (1 row) -----------------------------------
+   sy = CfgSection("exec", x, ry, w, 1, "Execution");
+   UiLabel(DCA_OBJ + "l_slip", lx, sy + 4, "Slippage tol / Max deviation:", C_SUB);
+   UiEdit (DCA_OBJ + "e_slip", ex, sy, 120, 22, DoubleToString(c.slipTolerance, 2));
+   UiEdit (DCA_OBJ + "e_dev", ex + 130, sy, 120, 22, IntegerToString(c.maxDeviation));
+   ry += 22 + 1*28 + 8 + 10;
+
+   //--- Save / Cancel -----------------------------------------------
+   UiButton(DCA_OBJ + "b_save", lx, ry, 150, 30, "SAVE", C_GREEN, FS_SEC);
+   UiButton(DCA_OBJ + "b_cancel", lx + 165, ry, 150, 30, "CANCEL", C_RED, FS_SEC);
   }
 
 //=================================================================== //
 //  Main panel                                                         //
 //=================================================================== //
+//--- column x-offsets (relative to panel x) for the cycle table
+#define COL_ID   10
+#define COL_SYM  44
+#define COL_DIR  150
+#define COL_ST   235
+#define COL_POS  370
+#define COL_PNL  450
+#define COL_BE   560
+#define COL_TP   680
+
 void PanelRebuild()
   {
    UiDeleteAll();
 
    int x = UI_X, y = UI_Y, w = UI_W;
 
-   // title bar (always visible)
+   //--- title bar (always visible) ----------------------------------
    UiRect(DCA_OBJ + "bar", x, y, w, UI_TITLEH, C_BAR, C_SUB);
-   UiLabel(DCA_OBJ + "title", x + 8, y + 4, "DCA Pro  -  Multi-Cycle Manager", C_TXT, 10);
-   UiButton(DCA_OBJ + "kill", x + w - 150, y + 2, 120, 18,
-            g_masterEnabled ? "TRADING: ON" : "TRADING: OFF",
-            g_masterEnabled ? C_GREEN : C_RED);
-   UiButton(DCA_OBJ + "min", x + w - 26, y + 2, 22, 18, g_uiMinimized ? "+" : "_", C_BTN);
+   UiLabel(DCA_OBJ + "title", x + 12, y + 7, "DCA Pro  -  Multi-Cycle Manager", C_TXT, FS_TITLE);
+   // master kill-switch: the single most prominent control
+   UiButton(DCA_OBJ + "kill", x + w - 232, y + 3, 196, UI_TITLEH - 6,
+            g_masterEnabled ? "TRADING: ON" : "TRADING: OFF  (PAUSED)",
+            g_masterEnabled ? C_KILLON : C_KILLOFF, FS_SEC);
+   UiButton(DCA_OBJ + "min", x + w - 30, y + 7, 22, 18, g_uiMinimized ? "+" : "_", C_BTN);
 
    if(g_uiMinimized)
       return;
@@ -239,52 +316,80 @@ void PanelRebuild()
       return;
      }
 
-   // body background
-   int rows = g_cycleCount;
-   int bodyH = 40 + (rows + 1) * UI_ROWH + 30;
-   UiRect(DCA_OBJ + "body", x, y + UI_TITLEH, w, bodyH, C_BG, C_SUB);
+   //--- global status bar (connection + market liveness + order count)
+   int statY = y + UI_TITLEH;
+   UiRect(DCA_OBJ + "statbar", x, statY, w, UI_STATUSH, C_SEC, C_SUB);
+   UiLabel(DCA_OBJ + "conn", x + 12, statY + 5, "Connection: ...", C_SUB, FS_HDR);
+   UiLabel(DCA_OBJ + "mkt",  x + 250, statY + 5, "Market: ...", C_SUB, FS_HDR);
+   UiLabel(DCA_OBJ + "acc",  x + w - 160, statY + 5,
+           StringFormat("Orders: %d / %d", TotalLiveOrders(), g_accountMaxOrders), C_SUB, FS_HDR);
 
-   // new-cycle controls
-   int ny = y + UI_TITLEH + 8;
-   UiLabel(DCA_OBJ + "nl", x + 8, ny + 4, "New:", C_SUB);
+   //--- body background ---------------------------------------------
+   int rows  = g_cycleCount;
+   int bodyTop = statY + UI_STATUSH;
+   int bodyH = 44 + 30 + rows * UI_BLOCKH + 8 + 100;
+   UiRect(DCA_OBJ + "body", x, bodyTop, w, bodyH, C_BG, C_SUB);
+
+   //--- new-cycle controls ------------------------------------------
+   int ny = bodyTop + 10;
+   UiLabel(DCA_OBJ + "nl", x + 12, ny + 5, "Symbol:", C_SUB, FS_HDR);
    if(g_uiNewSymbol == "") g_uiNewSymbol = Symbol();
-   UiEdit(DCA_OBJ + "nsym", x + 44, ny, 110, 20, g_uiNewSymbol);
-   UiButton(DCA_OBJ + "ndir", x + 162, ny, 80, 20, DirText(g_uiNewDir),
-            g_uiNewDir == DIR_LONG ? C_GREEN : C_RED);
-   UiButton(DCA_OBJ + "ncreate", x + 250, ny, 90, 20, "CREATE", C_BTN2);
-   UiLabel(DCA_OBJ + "acc", x + 350, ny + 4,
-           StringFormat("Orders %d/%d", TotalLiveOrders(), g_accountMaxOrders), C_SUB);
+   UiEdit  (DCA_OBJ + "nsym", x + 80, ny, 140, 26, g_uiNewSymbol);
+   UiButton(DCA_OBJ + "ndir", x + 234, ny, 110, 26, DirText(g_uiNewDir), DirColor(g_uiNewDir));
+   UiButton(DCA_OBJ + "ncreate", x + 354, ny, 120, 26, "Create Cycle", C_BTN2);
 
-   // header row
-   int hy = ny + UI_ROWH + 2;
-   UiLabel(DCA_OBJ + "hdr", x + 8, hy, "#  SYMBOL  DIR  STATE   POS   PnL        BE / TP", C_SUB, 8);
+   //--- table header (full words) -----------------------------------
+   int hy = ny + 36;
+   UiLabel(DCA_OBJ + "h_id",  x + COL_ID,  hy, "#",            C_SUB, FS_HDR);
+   UiLabel(DCA_OBJ + "h_sym", x + COL_SYM, hy, "Symbol",       C_SUB, FS_HDR);
+   UiLabel(DCA_OBJ + "h_dir", x + COL_DIR, hy, "Direction",    C_SUB, FS_HDR);
+   UiLabel(DCA_OBJ + "h_st",  x + COL_ST,  hy, "Status",       C_SUB, FS_HDR);
+   UiLabel(DCA_OBJ + "h_pos", x + COL_POS, hy, "Open Pos",     C_SUB, FS_HDR);
+   UiLabel(DCA_OBJ + "h_pnl", x + COL_PNL, hy, "Live P/L",     C_SUB, FS_HDR);
+   UiLabel(DCA_OBJ + "h_be",  x + COL_BE,  hy, "Breakeven",    C_SUB, FS_HDR);
+   UiLabel(DCA_OBJ + "h_tp",  x + COL_TP,  hy, "Take Profit",  C_SUB, FS_HDR);
 
-   // cycle rows
-   int ry = hy + 18;
+   //--- cycle blocks ------------------------------------------------
+   int ry0 = hy + 22;
    for(int i = 0; i < g_cycleCount; i++)
      {
       Cycle c = g_cycles[i];
       string sfx = IntegerToString(c.id);
-      UiLabel(DCA_OBJ + "row" + sfx, x + 8, ry + 4, "...", C_TXT, 8);
-      int bx = x + 250;
-      UiButton(DCA_OBJ + "cfg" + sfx, bx, ry, 34, 20, "Cfg", C_BTN);          bx += 36;
-      UiButton(DCA_OBJ + "act" + sfx, bx, ry, 34, 20,
-               (c.state == ST_WAITING || c.state == ST_RUNNING || c.state == ST_STOP_AFTER_TP) ? "Off" : "On",
-               (c.state == ST_IDLE || c.state == ST_DONE) ? C_GREEN : C_BTN);  bx += 36;
-      UiButton(DCA_OBJ + "cls" + sfx, bx, ry, 40, 20, "Close", C_RED);         bx += 42;
-      UiButton(DCA_OBJ + "stp" + sfx, bx, ry, 44, 20, "Stp@TP", C_BTN);        bx += 46;
-      UiButton(DCA_OBJ + "det" + sfx, bx, ry, 40, 20, "Detach", C_BTN);        bx += 42;
-      UiButton(DCA_OBJ + "del" + sfx, bx, ry, 30, 20, "Del", C_BTN);
-      ry += UI_ROWH;
+      int ry = ry0 + i * UI_BLOCKH;
+
+      // status colour badge
+      UiRect (DCA_OBJ + "rbadge" + sfx, x + 4, ry + 2, 4, 16, StateColor(c.state), StateColor(c.state));
+      // info columns (each its own label for per-column colour + alignment)
+      UiLabel(DCA_OBJ + "rid"  + sfx, x + COL_ID,  ry + 2, sfx, C_TXT, FS_ROW);
+      UiLabel(DCA_OBJ + "rsym" + sfx, x + COL_SYM, ry + 2, c.symbol, C_TXT, FS_ROW);
+      UiLabel(DCA_OBJ + "rdir" + sfx, x + COL_DIR, ry + 2, DirText(c.direction), DirColor(c.direction), FS_ROW);
+      UiLabel(DCA_OBJ + "rst"  + sfx, x + COL_ST,  ry + 2, StateText(c.state), StateColor(c.state), FS_ROW);
+      UiLabel(DCA_OBJ + "rpos" + sfx, x + COL_POS, ry + 2, IntegerToString(c.openPositions), C_TXT, FS_ROW);
+      UiLabel(DCA_OBJ + "rpnl" + sfx, x + COL_PNL, ry + 2, "0.00", C_TXT, FS_ROW);
+      UiLabel(DCA_OBJ + "rbe"  + sfx, x + COL_BE,  ry + 2, "-", C_TXT, FS_ROW);
+      UiLabel(DCA_OBJ + "rtp"  + sfx, x + COL_TP,  ry + 2, "-", C_TXT, FS_ROW);
+
+      // blocked/waiting reason line
+      UiLabel(DCA_OBJ + "rrsn" + sfx, x + COL_SYM, ry + 22, "", C_AMBER, FS_LOG);
+
+      // action buttons (full words)
+      int by = ry + 38, bx = x + 18, bw = UI_ABTN_W, bh = UI_ABTN_H, gap = 6;
+      UiButton(DCA_OBJ + "cfg" + sfx, bx, by, bw, bh, "Configure", C_BTN); bx += bw + gap;
+      UiButton(DCA_OBJ + "act" + sfx, bx, by, bw, bh, ActText(c.state),
+               CycleIsActive(c.state) ? C_BTN : C_GREEN); bx += bw + gap;
+      UiButton(DCA_OBJ + "cls" + sfx, bx, by, bw, bh, "Close Now", C_RED); bx += bw + gap;
+      UiButton(DCA_OBJ + "stp" + sfx, bx, by, bw, bh, "Stop After TP", C_BTN); bx += bw + gap;
+      UiButton(DCA_OBJ + "det" + sfx, bx, by, bw, bh, "Detach", C_BTN); bx += bw + gap;
+      UiButton(DCA_OBJ + "del" + sfx, bx, by, bw, bh, "Delete", C_BTN);
      }
 
-   // status / log feed (most recent first)
-   int ly = ry + 6;
-   UiLabel(DCA_OBJ + "logh", x + 8, ly, "Activity log:", C_SUB, 8); ly += 16;
+   //--- activity log feed -------------------------------------------
+   int ly = ry0 + rows * UI_BLOCKH + 6;
+   UiLabel(DCA_OBJ + "logh", x + 12, ly, "Activity log", C_SUB, FS_HDR); ly += 20;
    for(int k = 0; k < 4; k++)
      {
-      UiLabel(DCA_OBJ + "log" + IntegerToString(k), x + 14, ly, DcaLogLine(k), C_SUB, 8);
-      ly += 14;
+      UiLabel(DCA_OBJ + "log" + IntegerToString(k), x + 18, ly, DcaLogLine(k), C_SUB, FS_LOG);
+      ly += 18;
      }
   }
 
@@ -292,22 +397,58 @@ void PanelRebuild()
 void PanelRefresh()
   {
    if(g_uiMinimized || g_uiConfigCid >= 0) return;
+
+   // kill-switch reflects current state
+   ObjectSetString (0, DCA_OBJ + "kill", OBJPROP_TEXT,
+                    g_masterEnabled ? "TRADING: ON" : "TRADING: OFF  (PAUSED)");
+   ObjectSetInteger(0, DCA_OBJ + "kill", OBJPROP_BGCOLOR, g_masterEnabled ? C_KILLON : C_KILLOFF);
+
+   // global connection + market-liveness indicators
+   bool conn = IsConnected();
+   ObjectSetString (0, DCA_OBJ + "conn", OBJPROP_TEXT,
+                    conn ? "Connection: CONNECTED" : "Connection: DISCONNECTED");
+   ObjectSetInteger(0, DCA_OBJ + "conn", OBJPROP_COLOR,
+                    conn ? (color)C'120,210,140' : (color)C'235,140,140');
+   MktLive ls = MarketLiveness(Symbol());
+   ObjectSetString (0, DCA_OBJ + "mkt", OBJPROP_TEXT,
+                    StringFormat("Market(%s): %s", Symbol(), MktLiveText(ls)));
+   ObjectSetInteger(0, DCA_OBJ + "mkt", OBJPROP_COLOR,
+                    ls == MKT_LIVE ? (color)C'120,210,140'
+                                   : (ls == MKT_CLOSED ? (color)C'235,140,140' : C_AMBER));
+
    ObjectSetString(0, DCA_OBJ + "acc", OBJPROP_TEXT,
-                   StringFormat("Orders %d/%d", TotalLiveOrders(), g_accountMaxOrders));
+                   StringFormat("Orders: %d / %d", TotalLiveOrders(), g_accountMaxOrders));
    for(int k = 0; k < 4; k++)
       ObjectSetString(0, DCA_OBJ + "log" + IntegerToString(k), OBJPROP_TEXT, DcaLogLine(k));
+
    for(int i = 0; i < g_cycleCount; i++)
      {
       Cycle c = g_cycles[i];
+      string sfx = IntegerToString(c.id);
       double pnl = ComputeLivePnL(c);
-      string row = StringFormat("%d  %-8s %-5s %-7s %2d   %s%.2f   %s/%s",
-                     c.id, c.symbol, DirText(c.direction), StateText(c.state),
-                     c.openPositions, (pnl >= 0 ? "+" : ""), pnl,
-                     (c.currentBE > 0 ? DoubleToString(c.currentBE, SymDigits(c.symbol)) : "-"),
-                     (c.currentTP > 0 ? DoubleToString(c.currentTP, SymDigits(c.symbol)) : "-"));
-      ObjectSetString(0, DCA_OBJ + "row" + IntegerToString(c.id), OBJPROP_TEXT, row);
-      ObjectSetInteger(0, DCA_OBJ + "row" + IntegerToString(c.id), OBJPROP_COLOR,
+
+      ObjectSetInteger(0, DCA_OBJ + "rbadge" + sfx, OBJPROP_BGCOLOR, StateColor(c.state));
+      ObjectSetString (0, DCA_OBJ + "rst"  + sfx, OBJPROP_TEXT, StateText(c.state));
+      ObjectSetInteger(0, DCA_OBJ + "rst"  + sfx, OBJPROP_COLOR, StateColor(c.state));
+      ObjectSetString (0, DCA_OBJ + "rpos" + sfx, OBJPROP_TEXT, IntegerToString(c.openPositions));
+      ObjectSetString (0, DCA_OBJ + "rpnl" + sfx, OBJPROP_TEXT,
+                       StringFormat("%s%.2f", (pnl >= 0 ? "+" : ""), pnl));
+      ObjectSetInteger(0, DCA_OBJ + "rpnl" + sfx, OBJPROP_COLOR,
                        pnl >= 0 ? (color)C'120,210,140' : (color)C'235,140,140');
+      ObjectSetString (0, DCA_OBJ + "rbe" + sfx, OBJPROP_TEXT,
+                       (c.currentBE > 0 ? DoubleToString(c.currentBE, SymDigits(c.symbol)) : "-"));
+      ObjectSetString (0, DCA_OBJ + "rtp" + sfx, OBJPROP_TEXT,
+                       (c.currentTP > 0 ? DoubleToString(c.currentTP, SymDigits(c.symbol)) : "-"));
+
+      // show the specific blocked/waiting reason (addendum C.4)
+      string rsn = "";
+      if(c.state == ST_WAITING || c.state == ST_BLOCKED) rsn = c.blockReason;
+      ObjectSetString(0, DCA_OBJ + "rrsn" + sfx, OBJPROP_TEXT, rsn);
+
+      // keep the activate/deactivate button label in sync with state
+      ObjectSetString (0, DCA_OBJ + "act" + sfx, OBJPROP_TEXT, ActText(c.state));
+      ObjectSetInteger(0, DCA_OBJ + "act" + sfx, OBJPROP_BGCOLOR,
+                       CycleIsActive(c.state) ? C_BTN : C_GREEN);
      }
    ChartRedraw(0);
   }
@@ -440,7 +581,7 @@ void PanelOnClick(string name)
         {
          // only allow delete when not actively running
          if(g_cycles[i].state == ST_RUNNING || g_cycles[i].state == ST_WAITING || g_cycles[i].state == ST_STOP_AFTER_TP)
-            DcaLog("Delete blocked: deactivate the cycle first (Close/Stp@TP/Detach).");
+            DcaLog("Delete blocked: deactivate the cycle first (Close/Stop After TP/Detach).");
          else
            { RemoveCycle(i); SaveCycles(); }
         }

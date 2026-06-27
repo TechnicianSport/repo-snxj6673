@@ -54,6 +54,14 @@ enum SwapMode
    SWAP_MANUAL = 1  // project using configured per-lot-per-night value
   };
 
+//--- market-liveness (one shared condition: weekend close, restart, disconnect)
+enum MktLive
+  {
+   MKT_UNKNOWN = 0, // not enough info yet (startup / never seen a tick)
+   MKT_LIVE    = 1, // trading allowed and ticks are fresh
+   MKT_CLOSED  = 2  // trade-disallowed by broker OR ticks are stale
+  };
+
 //+------------------------------------------------------------------+
 //| Cycle structure                                                  |
 //+------------------------------------------------------------------+
@@ -110,6 +118,8 @@ struct Cycle
    int      openPositions;   // count of open positions
    datetime lastActionTime;
    datetime lastSwapDay;     // last broker calendar day the rollover TP recompute ran
+   string   blockReason;     // why this cycle is currently not opening new orders (for the UI)
+   int      prevLive;        // last observed market-liveness (-1 unknown, 0 not-live, 1 live)
   };
 
 #endif // __DCAPRO_DEFS_MQH__

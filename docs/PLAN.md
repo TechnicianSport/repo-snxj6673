@@ -178,14 +178,53 @@ SwapMoney_dollars = Lots × MoneyPerPipPerLot × SwapRate(pips/lot/night) × Nig
 - Hence **market** orders happen in exactly two places: (a) the start of each
   cycle (layer 0), and (b) the high-spread nearest-skipped-layer recovery fill.
 
-## 7) Start/continue filters
+## 7) Start/continue filters and the new-order gate hierarchy
 
-1. **Spread:** if `useStartSpreadFilter` is on and the spread is above
-   `startMaxSpread` at start time, the cycle does not start (it stays Waiting)
-   until the spread returns to range.
-2. **ROC:** if `|ROC|` on the configured timeframe (default M15) exceeds the
+Every NEW-order action passes through the SAME ordered gate chain. A cycle in
+`WAITING` only opens its first (layer-0) order when ALL of these pass, in order:
+
+1. **Stop Loss configured:** `slPrice > 0` (mandatory; see 4.).
+2. **Terminal permission:** `IsConnected()` AND `IsTradeAllowed()`.
+3. **Market liveness:** the shared detector reports `LIVE` (see 7a).
+4. **Spread:** if `useStartSpreadFilter` is on and the spread is above
+   `startMaxSpread`, the cycle waits until the spread returns to range.
+5. **ROC:** if `|ROC|` on the configured timeframe (default M15) exceeds the
    threshold (default 0.28), the cycle waits.
    - `ROC = (Close[0] − Close[period]) / Close[period] × 100`.
+
+The exact failing gate is shown per-cycle on the panel (e.g. `Waiting: market
+closed`, `Waiting: spread 4.2p > max 2.0p`, `Waiting: ROC 0.41 > 0.28`,
+`Blocked: order cap 100/100`).
+
+The gates 2–4 (terminal + liveness, and the spread cap) also guard the other
+NEW-order paths: pending-limit (re)placement after a spread spike, the
+spread-spike recovery market order, and each auto-restarted generation.
+
+### 7a) Market-liveness detector (one shared condition)
+
+A single detector is consumed identically by normal operation, restart-recovery
+and disconnection-recovery — never three separate checks. It is built from real
+MQL4 primitives, not a hard-coded weekly schedule:
+
+- `MarketInfo(symbol, MODE_TRADEALLOWED)` → if the broker disallows trading the
+  symbol, state is `CLOSED`.
+- **Tick-staleness:** the seconds since the symbol's last quote actually advanced,
+  measured against the LOCAL clock (so it still grows when *no* ticks arrive,
+  unlike server time which freezes without ticks). Threshold is configurable via
+  `InpTickStaleSeconds` (default 150s). Over the threshold → `CLOSED`.
+- Until enough information exists (startup, never-seen-a-tick) the state is
+  `UNKNOWN` and is treated as not-live for placing NEW orders.
+
+States: `LIVE` / `CLOSED` / `UNKNOWN`. The UI also shows a *non-authoritative*
+weekend hint next to `CLOSED`, used for the label only — it never gates trading.
+When a symbol transitions `(not-live) → LIVE` (weekend reopen, reconnect, etc.)
+the EA runs the SAME full reconciliation pass as restart/disconnect recovery,
+because a TP or basket SL may have fired server-side during the gap.
+
+**Important:** these gates only decide whether the EA *places* NEW orders. They
+are NEVER checked before, and never suppress, the execution of an existing TP or
+basket SL — those are broker-side and are expected to fire even at market
+open/close when the spread is far above the cycle's configured maximum.
 
 ## 8) Cycle shutdown modes
 
@@ -227,23 +266,31 @@ SwapMoney_dollars = Lots × MoneyPerPipPerLot × SwapRate(pips/lot/night) × Nig
 
 ## 12) Advanced UI
 
-- Main panel: create cycle (symbol + direction), Activate/Save/Delete,
-  Close Now / Stop-After-TP / Detach buttons, master kill-switch,
+- Main panel: create cycle (symbol + direction), master kill-switch,
   Minimize/Restore, account order counter, and an activity log feed.
-- Each cycle row: symbol, direction, state, live aggregate P/L, open-position
-  count, current BE and unified TP.
-- Per-cycle config dialog: layer table (spacing pips + lot), baseTP,
-  **Stop Loss (pips)**, defaultSpread, maxSpread, startMaxSpread, swap L/S,
-  triple-swap day, ROC threshold/period/TF, slippage/deviation, and toggles for
-  spread-in-TP, swap-in-TP, swap AUTO/MANUAL, start-spread filter, ROC filter,
-  and spacing mode (step/absolute).
+- Each cycle row: status colour badge, symbol, **colour-coded direction** (text
+  + colour, never colour alone), colour-coded status
+  (`RUNNING` / `WAITING` / `BLOCKED` / `STOP AFTER TP` / `DETACHED` /
+  `DEACTIVATED` / `DONE`), open-position count, live P/L, breakeven, take-profit,
+  and a per-cycle "waiting/blocked reason" line. Full-word action buttons:
+  `Configure`, `Activate`/`Deactivate` (state-aware), `Close Now`,
+  `Stop After TP`, `Detach`, `Delete`.
+- An always-visible global status bar shows terminal `Connection` and the shared
+  `Market` liveness state, separate from the cycle rows.
+- The master kill-switch is the single most prominent control: a large button
+  fixed at the top, solid green when ON, solid red (`PAUSED`) when OFF.
+- Per-cycle config dialog: grouped, readable sections — **Layers & Take Profit**,
+  **Stop Loss** (single fixed PRICE), **TP & Cost Inclusion**,
+  **Spread & ROC Filters**, **Swap**, and **Execution** — with wide input fields
+  and toggles for spread-in-TP, swap-in-TP, swap AUTO/MANUAL, start-spread filter,
+  ROC filter, and spacing mode (step/absolute).
 
 ## 13) File layout
 
 ```
 MQL4/Experts/DCA_Pro.mq4            — entry point (OnInit/OnTick/OnTimer/OnChartEvent)
 MQL4/Include/DCAPro/Defs.mqh        — enums / struct / constants
-MQL4/Include/DCAPro/Utils.mqh       — pip/point, spread, ROC, swap, money/pip, log
+MQL4/Include/DCAPro/Utils.mqh       — pip/point, spread, ROC, swap, money/pip, log, market-liveness
 MQL4/Include/DCAPro/Persistence.mqh — save/load cycles & spread map
 MQL4/Include/DCAPro/CycleManager.mqh— core cycle logic and scenarios
 MQL4/Include/DCAPro/Panel.mqh       — UI

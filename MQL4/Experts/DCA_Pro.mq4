@@ -22,6 +22,7 @@ input bool   InpAutosave        = true;   // periodically persist cycles & sprea
 input bool   InpMasterEnabled   = true;   // master switch: allow NEW orders (positions always kept)
 input int    InpAccountMaxOrders= 100;    // account-wide cap on pending+market orders
 input int    InpReconcileSeconds= 30;     // full reconcile-with-broker interval (seconds)
+input int    InpTickStaleSeconds= 150;    // no-tick seconds before a symbol is treated as market-CLOSED
 
 //--- internal --------------------------------------------------------
 datetime g_lastSave      = 0;
@@ -35,6 +36,7 @@ int OnInit()
    g_lotFactor       = InpLotInputFactor;
    g_masterEnabled   = InpMasterEnabled;
    g_accountMaxOrders= MathMax(1, InpAccountMaxOrders);
+   g_tickStaleSeconds= MathMax(10, InpTickStaleSeconds);
    g_wasConnected    = IsConnected();
 
    // restore persisted state, then reconcile with live orders
@@ -72,8 +74,12 @@ void OnDeinit(const int reason)
 //+------------------------------------------------------------------+
 void OnTick()
   {
+   MktTouch(Symbol());
    for(int i = 0; i < g_cycleCount; i++)
+     {
+      MktTouch(g_cycles[i].symbol);
       OnCycleTick(g_cycles[i]);
+     }
 
    PanelRefresh();
   }
@@ -101,8 +107,12 @@ void OnTimer()
      }
 
    // ensure logic keeps running even without ticks (e.g. weekend recovery checks)
+   MktTouch(Symbol());
    for(int i = 0; i < g_cycleCount; i++)
+     {
+      MktTouch(g_cycles[i].symbol);
       OnCycleTick(g_cycles[i]);
+     }
 
    PanelRefresh();
 

@@ -3,8 +3,10 @@
 Advanced two-direction, multi-cycle **DCA Expert Advisor** for MetaTrader 4,
 built for cent accounts and 5-digit brokers, with precise volume-weighted
 break-even, simple-average spread-cost take-profit math, a mandatory per-cycle
-fixed stop-loss, high-spread handling, full crash/disconnect recovery, a master
-kill-switch, and an advanced on-chart UI.
+fixed stop-loss (broker-native basket SL), high-spread handling, a unified
+market-liveness detector that gates new orders across weekend close / restart /
+disconnection (but never the execution of TP or SL), full crash/disconnect
+recovery, a master kill-switch, and an advanced on-chart UI.
 
 ## Layout
 ```

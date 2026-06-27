@@ -30,16 +30,23 @@
   frees.
 - `InpReconcileSeconds` — interval of the full reconcile-with-broker pass that
   self-heals the in-memory state (default 30; 0 disables).
+- `InpTickStaleSeconds` — how many seconds without a fresh quote before a symbol
+  is treated as **market CLOSED** by the liveness detector (default 150).
 
 ## Using the panel
-- **New:** type a symbol, click the direction button (LONG/SHORT), then
-  **CREATE**.
-- Each cycle row: `Cfg` (config), `On/Off` (activate/deactivate), `Close` (close
-  now), `Stp@TP` (stop after TP), `Detach`, `Del` (delete).
-- **TRADING: ON/OFF** (top bar): the master kill-switch.
+- **New cycle:** type a Symbol, click the direction button (LONG/SHORT), then
+  **Create Cycle**.
+- Each cycle row has full-word buttons: **Configure**, **Activate**/**Deactivate**
+  (state-aware), **Close Now**, **Stop After TP**, **Detach**, **Delete**.
+- **TRADING: ON / OFF (PAUSED)** (top bar): the master kill-switch — the most
+  prominent control, solid green when ON and solid red when OFF.
+- A global status bar shows terminal **Connection** (CONNECTED/DISCONNECTED) and
+  **Market** liveness (LIVE/CLOSED/UNKNOWN) for the chart symbol.
 - The `_` button (top-right) Minimizes/Restores the panel.
-- Columns: number, symbol, direction, state, open positions, **live P/L**,
-  BE/TP. An activity log feed is shown at the bottom.
+- Columns: `#`, Symbol, Direction (colour-coded), Status (colour-coded), Open
+  Pos, Live P/L, Breakeven, Take Profit. When a cycle is waiting/blocked it shows
+  the exact reason (e.g. `Waiting: market closed`, `Waiting: spread 4.2p > max
+  2.0p`, `Blocked: order cap 100/100`). An activity log feed is at the bottom.
 
 ### Per-cycle config dialog
 - **Layers**: format `sp:lot,sp:lot,...` — `sp` is the layer spacing in **pips**

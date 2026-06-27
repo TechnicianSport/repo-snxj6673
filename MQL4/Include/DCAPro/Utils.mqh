@@ -234,5 +234,77 @@ bool DayChanged(datetime last)
    return((cur / 86400) != (last / 86400));
   }
 
+//=================================================================== //
+//  Market-liveness detector (ONE shared condition for weekend close, //
+//  terminal restart and internet disconnection - see addendum A).    //
+//  Built from real MQL4 primitives:                                  //
+//    - MarketInfo(MODE_TRADEALLOWED): hard "not live" when false.    //
+//    - tick-staleness: measured against LOCAL clock so it still      //
+//      advances when NO ticks arrive at all (server time freezes     //
+//      without ticks, local time does not).                          //
+//  Terminal permission (IsConnected/IsTradeAllowed) is kept distinct //
+//  and checked separately by the caller, never folded in here.       //
+//=================================================================== //
+double g_tickStaleSeconds = 150.0;   // configurable staleness threshold (sec)
+
+string   g_mktSym[];                 // per-symbol tracker
+datetime g_mktQuote[];               // last broker quote time (MODE_TIME) seen
+datetime g_mktLocalStamp[];          // LOCAL time when that quote last advanced
+
+int MktIndex(const string sym)
+  {
+   for(int i = 0; i < ArraySize(g_mktSym); i++)
+      if(g_mktSym[i] == sym) return(i);
+   return(-1);
+  }
+
+//--- call once per tick/timer for every tracked symbol
+void MktTouch(const string sym)
+  {
+   datetime qt = (datetime)MarketInfo(sym, MODE_TIME);
+   int idx = MktIndex(sym);
+   if(idx < 0)
+     {
+      int n = ArraySize(g_mktSym);
+      ArrayResize(g_mktSym, n + 1);
+      ArrayResize(g_mktQuote, n + 1);
+      ArrayResize(g_mktLocalStamp, n + 1);
+      g_mktSym[n]        = sym;
+      g_mktQuote[n]      = qt;
+      g_mktLocalStamp[n] = TimeLocal();
+      return;
+     }
+   if(qt != g_mktQuote[idx])
+     {
+      g_mktQuote[idx]      = qt;
+      g_mktLocalStamp[idx] = TimeLocal();
+     }
+  }
+
+//--- current market-liveness for a symbol
+MktLive MarketLiveness(const string sym)
+  {
+   if(MarketInfo(sym, MODE_TRADEALLOWED) == 0.0) return(MKT_CLOSED);
+   int idx = MktIndex(sym);
+   if(idx < 0 || g_mktLocalStamp[idx] == 0) return(MKT_UNKNOWN);
+   double stale = (double)(TimeLocal() - g_mktLocalStamp[idx]);
+   if(stale > g_tickStaleSeconds) return(MKT_CLOSED);
+   return(MKT_LIVE);
+  }
+
+//--- non-authoritative weekend hint for the UI label ONLY (never gates trading)
+bool WeekendHint()
+  {
+   int dow = DowOf(TimeCurrent());
+   return(dow == 0 || dow == 6); // Sun / Sat
+  }
+
+string MktLiveText(MktLive s)
+  {
+   if(s == MKT_LIVE)   return("LIVE");
+   if(s == MKT_CLOSED) return(WeekendHint() ? "CLOSED (weekend?)" : "CLOSED");
+   return("UNKNOWN");
+  }
+
 #endif // __DCAPRO_UTILS_MQH__
 //+------------------------------------------------------------------+
