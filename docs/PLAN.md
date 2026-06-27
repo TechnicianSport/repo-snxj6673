@@ -1,179 +1,233 @@
-# DCA Pro — Expert Advisor برای متاتریدر ۴ (پلان جامع)
+# DCA Pro — MetaTrader 4 Expert Advisor (Comprehensive Plan)
 
-این سند، طرح کامل ویژگی‌ها، سناریوها و فرمول‌های ریاضی نرم‌افزار است. هدف: یک
-DCA دوطرفه، چند-چرخه‌ای، مقاوم در برابر خطا، با UI پیشرفته و محاسبات دقیق روی
-حساب «سنت» (Cent Account) و بروکر ۵ رقمی.
+This document is the full specification of the EA: features, scenarios and the
+exact math. Goal: a two-direction, multi-cycle, fault-tolerant DCA EA with an
+advanced UI and precise calculations on a **cent account** and a **5-digit
+broker**.
 
-> همهٔ اعداد نمونه در درخواست شما «فرضی» بودند؛ بنابراین منطق و فرمول‌ها بر مبنای
-> صحت ریاضی پیاده شده‌اند، نه اعداد مثال.
+> All example numbers in the original request were illustrative; the logic and
+> formulas are implemented for mathematical correctness, not for the sample
+> numbers.
 
 ---
 
-## ۱) مفاهیم پایه و تبدیل واحدها (Cent Account + 5-digit)
+## 1) Core concepts and unit conversion (cent account + 5-digit)
 
-- بروکر ۵ رقمی: `Point = 0.00001`، هر **پیپ = 10 پوینت = 0.0001**.
-  - برای جفت‌های JPY (۳ رقمی) پیپ = `0.01` و پوینت = `0.001`؛ کد خودکار تشخیص می‌دهد.
-- حساب سنتی:
-  - `۱ لات سنتی = 0.01 لات استاندارد`
-  - `0.01 لات سنتی = 0.0001 لات استاندارد`
-  - ارزش هر پیپ برای EURUSD: لات استاندارد ≈ `$10`، پس `0.0001 std = $0.001`/pip،
-    یعنی **هر 0.01 لات سنتی ≈ $0.001 به ازای هر پیپ** و **هر ۱ لات سنتی ≈ $0.10/pip**.
-- برای دقت کامل، کد ارزش پولیِ هر پیپ را **مستقیماً از ترمینال** می‌خواند
-  (`MarketInfo(symbol, MODE_TICKVALUE)` و `MODE_TICKSIZE`) تا روی حساب سنتی/استاندارد
-  و روی هر جفت‌ارز خودبه‌خود درست باشد. ورودی‌های شما به «لات سنتی» وارد می‌شوند و
-  با ضریب `LotInputToTerminal` (پیش‌فرض ۱.۰) به واحد لاتِ OrderSend نگاشت می‌شوند.
+- 5-digit broker: `Point = 0.00001`, **1 pip = 10 points = 0.0001**.
+  - For 3-digit JPY pairs the pip is `0.01` and the point is `0.001`; the code
+    detects this automatically from `Digits`.
+- Cent account:
+  - `1 cent lot = 0.01 standard lot`
+  - `0.01 cent lot = 0.0001 standard lot`
+- For full precision the code reads the **money value of one pip directly from
+  the terminal** (`MarketInfo(MODE_TICKVALUE)` and `MODE_TICKSIZE`) so it is
+  correct on any account type and any symbol. User volumes are entered in cent
+  lots and mapped to OrderSend lots via `InpLotInputFactor` (default 1.0).
 
-## ۲) ساختار چرخه (Cycle)
+## 2) Cycle structure
 
-هر «چرخه» یک واحد مستقل است با:
-- `symbol`, `direction` (LONG/SHORT)
-- لایه‌ها: آرایه‌ای از `(spacing_pips, lot_cents)` — فاصله هر لایه هم نسبت به لایهٔ
-  قبل و هم تجمعی نسبت به لایهٔ اول محاسبه و نمایش داده می‌شود.
-- `baseTP_pips` (پیش‌فرض ۵)، `defaultSpread_pips` (پیش‌فرض ۱.۵)،
-  `maxSpread_pips` (سقف اسپرد برای باز/کنسل موقت سفارش‌ها)،
-  `useSpreadInTP`, `useSwapInTP`,
-  پارامترهای سواپ، پارامترهای فیلتر شروع (اسپرد و ROC).
-- هر چرخه یک **Magic Number یکتا** دارد؛ کل ردیابی/بازیابی بر اساس Magic + کامنت
-  (شناسهٔ چرخه + شمارهٔ لایه) انجام می‌شود.
-- چند چرخهٔ هم‌جهت روی یک نماد مجاز است (مثلاً ۲ لانگ + ۳ شورت روی EURUSD)، هرکدام
-  کاملاً مستقل مدیریت می‌شوند.
+Each cycle is an independent unit with:
+- `symbol`, `direction` (LONG/SHORT).
+- Layers: an array of `(spacing_pips, lot)` entries. Spacing is interpreted by
+  `spacingMode`: **step** (gap from the previous layer) or **absolute**
+  (cumulative distance from the reference price).
+- `baseTP` (pips), **`slPips` (mandatory per-cycle fixed stop-loss in pips)**,
+  `defaultSpread`, `maxSpread`, `startMaxSpread`, `useStartSpreadFilter`,
+  `useSpreadInTP`, `useSwapInTP`, swap parameters (`swapLong`/`swapShort`,
+  `swapMode`, `tripleSwapDay`), ROC start-filter parameters.
+- Each cycle owns a **unique magic number** (`MagicBase + id`); all tracking and
+  recovery is keyed on magic + the order comment (`DCAP|cycleId|layer`).
+- Multiple same-direction cycles on one symbol are allowed (e.g. 2 long + 3
+  short on EURUSD); each is managed completely independently.
 
-## ۳) چرخهٔ عمر یک Cycle
+## 3) Cycle lifecycle
 
-1. کاربر نماد + جهت را انتخاب، چرخه می‌سازد، کانفیگ و ذخیره می‌کند، سپس **Activate**.
-2. شرط‌های شروع چک می‌شوند (بخش ۷). اگر OK بود، **سفارش مارکت لایهٔ اول** باز می‌شود.
-3. قیمت واقعی باز شدن لایهٔ اول مرجعِ چیدمان لایه‌های بعدی DCA می‌شود
-   (Limitها نسبت به قیمت واقعی باز شدن چیده می‌شوند، نه قیمت لحظهٔ ارسال).
-4. با خوردن هر لایه، BE و TP نهاییِ **همهٔ** پوزیشن‌های باز بازمحاسبه و یکسان می‌شود.
-5. وقتی قیمت به TP نهایی برسد، کل چرخه بسته می‌شود و **چرخهٔ بعدی با همان کانفیگ
-   خودکار** آغاز می‌شود (مگر اینکه حالت خاموشی روی آن فعال شده باشد).
+1. User picks symbol + direction, creates the cycle, configures and saves it,
+   then **Activates** it.
+2. Start filters are checked (section 7). If OK, the **layer-0 market order** is
+   opened.
+3. The real fill price of layer 0 becomes the reference for laying out the
+   remaining DCA limit orders (limits are placed relative to the real fill
+   price, not the price at submission time).
+4. Every time a layer fills, the volume-weighted break-even and the single
+   unified final TP of **all** open positions are recomputed and pushed to every
+   ticket.
+5. When price reaches the unified TP the whole cycle closes and the **next
+   generation starts automatically with the same config** (unless a shutdown
+   mode was applied).
 
-## ۴) محاسبات ریاضی (هستهٔ دقت)
+## 4) The math core
 
-نماد‌گذاری: برای پوزیشن‌های باز i با قیمت ورود `e_i`، حجم `v_i` (لات)، اسپردِ
-ثبت‌شده در لحظهٔ باز شدن `s_i` (پیپ).
+Notation: for open position `i` with entry `e_i`, volume `v_i` (lots) and the
+spread recorded at its fill `s_i` (pips), across `N` open positions.
 
-- **نقطهٔ سر‌به‌سر (Break-Even) وزنی:**
+- **Volume-weighted break-even:**
   ```
   BE = Σ(e_i · v_i) / Σ(v_i)
   ```
-- **پوششِ اسپرد (وزنی):** هزینهٔ کلِ اسپرد = `Σ(s_i · v_i)` (واحد pip·lot). برای
-  جبران آن، کلِ سبد باید به اندازهٔ زیر حرکت کند:
+- **Spread cost — SIMPLE average (corrected):** the spread distance added to TP
+  is the simple arithmetic mean of the registered spreads, NOT a
+  volume-weighted average:
   ```
-  spreadDist = Σ(s_i · v_i) / Σ(v_i)   (پیپ)
+  spreadDist = Σ(s_i) / N        (pips)
   ```
-  این دقیقاً همان نکتهٔ شماست: لازم نیست قیمت `n × spread` حرکت کند؛ چون با افزایش
-  حجم، «وزنِ» پوزیشن‌ها بالا می‌رود و میانگینِ وزنیِ اسپرد، کلِ هزینه را پوشش می‌دهد.
-- **پوشش سواپ (در صورت منفی بودن):**
+  This matches the requirement: as more volume is added the per-unit spread
+  cost is diluted, and the unified TP only needs to cover the average registered
+  spread across the filled tickets.
+- **Swap cost (only when negative):**
   ```
-  swapMoney = Σ swap_charged_i           (حالت AUTO: از OrderSwap هر پوزیشن)
-            یا swapPerLotPerNight · Σv_i · nightsHeld   (حالت MANUAL/پیش‌بینی)
-  swapDist  = max(0, -swapMoney) / (Σv_i · moneyPerPipPerLot)   (پیپ)
+  swapMoney = Σ OrderSwap()_i                         (AUTO mode)
+            = Σ [ v_i · moneyPerPipPerLot · rate · nightsHeld_i ]   (MANUAL)
+  swapDist  = max(0, -swapMoney) / (Σv_i · moneyPerPipPerLot)       (pips)
   ```
-  سواپ مثبت روی محاسبه اثری ندارد (فقط منفی پوشش داده می‌شود).
-- **فاصلهٔ TP از BE:**
+  where `rate` is `swapLong` for a LONG cycle and `swapShort` for a SHORT cycle
+  (pips per 1.0 lot per night), and `nightsHeld_i` includes triple-swap-day
+  weighting (section 5). Positive swap is ignored (only negative swap is
+  covered).
+- **TP distance from BE:**
   ```
   tpDist = baseTP + (useSpreadInTP ? spreadDist : 0) + (useSwapInTP ? swapDist : 0)
   ```
-- **قیمت TP نهایی (یکسان برای همهٔ پوزیشن‌های چرخه):**
+- **Unified final TP price (identical for every position in the cycle):**
   ```
   LONG : TP = BE + tpDist · pip
-  SHORT: TP = BE - tpDist · pip
+  SHORT: TP = BE − tpDist · pip
   ```
-- قانون قطعی: **با هر بار باز شدن یک پوزیشن جدید**، BE و TP نهایی بازمحاسبه و TP
-  همهٔ پوزیشن‌های قبلی به این مقدار جدید **ModifyOrder** می‌شود؛ همه یک قیمت بسته‌شدن
-  واحد دارند.
+- **Order-of-operations rule:** every time a layer transitions from pending to
+  open — for ANY reason (normal grid fill OR the spread-spike market recovery
+  fill) — the EA, in this exact order: (1) re-reads the real fill price and real
+  spread for that ticket, (2) recomputes BE, (3) recomputes the simple-average
+  spread cost, (4) recomputes swap cost, (5) recomputes the unified TP price,
+  (6) pushes that TP to every open ticket AND refreshes the provisional TP on
+  every still-pending limit of the cycle. There is exactly one TP-recalculation
+  pipeline, always triggered the same way.
 
-### Limitهای هنوز باز‌نشده
-چون اسپرد/اسلیپیجِ لحظهٔ پر شدن نامعلوم است، در زمان ثبتِ Limit یک TP «موقت» با
-`defaultSpread_pips` (۱.۵) داده می‌شود (متاتریدر برای ثبت Limit نیازمند SL/TP معتبر/
-صفر است؛ ما TP فرمالیتهٔ دقیق می‌دهیم). به‌محض پر شدنِ Limit، اسپرد واقعی ثبت و TP
-نهایی همهٔ پوزیشن‌ها بازمحاسبه می‌شود.
+### Mandatory per-cycle stop-loss
+Every order — market or limit — is submitted with a fixed stop-loss placed
+`slPips` away from **its own entry price**, in the loss direction. The SL is
+fixed for the life of the cycle and is preserved on every TP `OrderModify`.
+`slPips` must be > 0; the config dialog rejects a zero/blank value and falls
+back to the default (50 pips). A single basket-wide SL price is intentionally
+NOT used, because grid layers fill at different prices and a shared SL price
+would be geometrically invalid for the deeper layers.
 
-### اسلیپیج
-اگر اسلیپیجِ قیمت باز شده تا ۱ پیپ به ضرر باشد، اصلاحی لازم نیست؛ بیش از آن، TP
-نهاییِ همهٔ پوزیشن‌ها و Limitها به‌روزرسانی می‌شود تا پوشش دهد. (آستانه قابل تنظیم.)
+### Not-yet-filled limits
+Because the spread/slippage at fill time is unknown, a pending limit is given a
+provisional TP using `defaultSpread` (MT4 requires a valid TP/SL on the order).
+As soon as it fills, the real spread is registered and the unified TP of all
+positions is recomputed. Provisional TP/SL on resting limits is also refreshed
+on every recompute.
 
-## ۵) محاسبهٔ سواپ (مطابق نقل‌قول بروکر)
+### Slippage
+If the realized fill is adverse by up to `slipTolerance` pips, no correction is
+needed; the unified TP recompute always anchors to the real fill price anyway,
+so any larger deviation is absorbed automatically. Adverse slippage beyond the
+tolerance is logged.
+
+## 5) Swap calculation
 
 ```
-SWAP = Lots × PipCostPerLot × SwapRate × Nights
+SwapMoney_dollars = Lots × MoneyPerPipPerLot × SwapRate(pips/lot/night) × NightsHeld
 ```
-- نرخِ روی Contract Spec درصدی است → برای فرمول در ۱۰۰ ضرب می‌شود؛ در متاتریدر سواپ
-  به پیپ نمایش داده می‌شود.
-- شب چهارشنبه‌به‌پنجشنبه: ۳ برابر (Triple). برای USD/CAD, USD/TRY, EUR/TRY شبِ
-  پنجشنبه‌به‌جمعه ۳ برابر؛ CFD جمعه‌به‌دوشنبه ۳ برابر. روزِ Triple در کانفیگ قابل تعیین.
-- کاربر می‌تواند مقدار سواپ (مثبت/منفی) را با عدد وارد کند (مثلاً `-7` به ازای هر لات
-  در هر شب)؛ معادلِ سنتیِ آن خودکار محاسبه می‌شود. حالت AUTO نیز سواپِ واقعیِ
-  `OrderSwap()` را می‌خواند. سواپ منفی به پیپ تبدیل و به `tpDist` افزوده می‌شود.
+- The Wed→Thu rollover is charged triple (configurable `tripleSwapDay`,
+  0=Sun..6=Sat). `NightsHeld` accrues from the position open time to now and
+  applies the triple weighting on the configured day.
+- The user enters the signed swap rate (e.g. `-7`) for LONG and SHORT
+  separately; only the side matching the cycle direction is used, but both are
+  stored so the config is reusable if the cycle is cloned to the opposite side.
+  `SWAP_AUTO` instead reads the broker's actual `OrderSwap()`. Negative swap is
+  converted to pips and added to `tpDist`.
+- On each broker day rollover the swap-driven TP is recomputed once even without
+  a new fill.
 
-## ۶) سناریوهای اسپرد بسیار بالا
+## 6) Very-high-spread scenarios
 
-- **کنسلِ موقت لایه‌های پیش‌رو:** اگر اسپرد از `maxSpread` بالاتر رود، سفارش‌های
-  Limitِ «پیش‌رو»ی چرخه موقتاً کنسل می‌شوند، اما همهٔ مشخصاتشان (سطح قیمت، حجم، TP،
-  شمارهٔ لایه) در حافظه/فایل نگه داشته می‌شود. به‌محض بازگشت اسپرد به محدودهٔ نرمال،
-  دقیقاً همان‌ها دوباره ثبت می‌شوند.
-- **ری‌پوزیشن در جهتِ سود:** اگر در زمان اسپرد بالا قیمت از سطحِ نزدیک‌ترین Limit رد
-  شده و وقتی اسپرد نرمال شد قیمت **آن‌طرف‌تر/عمیق‌تر** باشد، نزدیک‌ترین Limیتِ رد‌شده
-  **مارکت** زده می‌شود؛ قیمت واقعی باز شدن گرفته، BE و TP نهایی بازتعریف، و لایه‌های
-  بعدی از همان نقطهٔ باز شدنِ مارکت با فواصل پایه‌ای خود **هل داده/بازچیده** می‌شوند
-  (مثال: لایهٔ ۳ پنج پیپ بالاتر مارکت شد → لایهٔ ۴ هم پنج پیپ بالاتر، و فاصلهٔ پایه‌ایِ
-  ۲۲ پیپ از لایهٔ ۳ حفظ می‌شود).
-- بنابراین **مارکت** فقط در دو حالت رخ می‌دهد: (الف) شروع هر چرخه، (ب) شرایط خاصِ
-  اسپرد بالا که قیمت نزدیک‌ترین Limit را رد کرده و در عمقِ نرمال‌شده باید مارکت شود.
+- **Temporary parking of forward limits:** if the spread exceeds `maxSpread`,
+  the forward (not-yet-filled) limit orders of the cycle are temporarily
+  cancelled, but their full specs (price level, volume, TP, layer index) are
+  kept in memory/file. When the spread returns to normal, the same orders are
+  re-placed.
+- **Reposition in the profit direction:** if, during the high-spread window,
+  price crossed the nearest parked limit and is now deeper, that nearest skipped
+  limit is filled at **market**; the real fill price is taken, BE and the
+  unified TP are recomputed, and the remaining layers are shifted by the
+  overshoot so their base spacing is preserved from the new market fill.
+- Hence **market** orders happen in exactly two places: (a) the start of each
+  cycle (layer 0), and (b) the high-spread nearest-skipped-layer recovery fill.
 
-## ۷) شرط‌های شروع/ادامهٔ چرخه
+## 7) Start/continue filters
 
-1. **اسپرد:** اگر هنگام شروعِ چرخه اسپرد بالای محدودهٔ نرمال باشد، چرخه شروع نمی‌شود
-   (فعال است ولی منتظر می‌ماند) تا اسپرد به محدوده برگردد. (قابل تنظیم.)
-2. **ROC:** اگر `|ROC|` در تایم‌فریم M15 بزرگ‌تر از `0.28` باشد، شروع نمی‌شود و منتظر
-   می‌ماند تا زیر آستانه بیاید. (آستانه/پریود/تایم‌فریم قابل تنظیم.)
+1. **Spread:** if `useStartSpreadFilter` is on and the spread is above
+   `startMaxSpread` at start time, the cycle does not start (it stays Waiting)
+   until the spread returns to range.
+2. **ROC:** if `|ROC|` on the configured timeframe (default M15) exceeds the
+   threshold (default 0.28), the cycle waits.
    - `ROC = (Close[0] − Close[period]) / Close[period] × 100`.
 
-## ۸) حالت‌های خاموش کردن چرخه
+## 8) Cycle shutdown modes
 
-1. **Close Now:** بستن فوری همهٔ پوزیشن‌های چرخه با قیمت مارکت (هر سود/زیانی).
-2. **Stop After TP:** چرخه تا گرفتنِ سودِ فعلی ادامه می‌دهد، سپس غیرفعال می‌شود و
-   چرخهٔ بعدی شروع نمی‌شود؛ وضعیت با یک برچسب واضح در UI نشان داده می‌شود.
-3. **Detach (جداسازی):** کنترل چرخه از سفارش‌ها برداشته می‌شود؛ پوزیشن‌ها/Limitها و
-   TPهایشان دست‌نخورده باقی می‌مانند و چرخه از لیست UI حذف می‌شود.
-- چرخه ابتدا باید با یکی از سه روش بالا «غیرفعال» شود، سپس از پنل **حذف** گردد.
+1. **Close Now:** immediately close all positions of the cycle at market.
+2. **Stop After TP:** the cycle runs until the current TP is hit, then
+   deactivates; the next generation is not started. The state is shown clearly
+   in the UI.
+3. **Detach:** control is removed from the orders; positions/limits and their
+   TPs are left untouched and the cycle is removed from the UI list.
+- A cycle must first be deactivated by one of the three modes above, then
+  **deleted** from the panel.
 
-## ۹) بازیابی پس از بسته شدن متاتریدر / قطع اینترنت
+## 9) Recovery after MT4 restart / disconnect
 
-- پیش از هر رویداد، کانفیگ و وضعیتِ همهٔ چرخه‌ها + نگاشتِ `ticket → spread` در فایل
-  ذخیره می‌شود. هنگام بازگشت، کد با اسکنِ سفارش‌ها بر اساس Magic چرخه‌ها را بازسازی
-  و رهگیری می‌کند و طبق قوانین نرمال ادامه می‌دهد.
-- اگر در زمانِ خاموشی، در سمت سرور TP نهاییِ یک چرخه خورده و بسته شده باشد: Limitهای
-  بلااستفادهٔ همان چرخه حذف و چرخه **غیرفعال** می‌شود تا کاربر دستی فعال کند (پیام
-  واضح: «TP خورد؛ آمادهٔ شروع مجدد»).
-- اگر TP نخورده باشد: چرخه دقیقاً مثل همیشه پوزیشن‌ها/Limitها را حفظ و مدیریت می‌کند
-  تا TP بخورد و سپس چرخهٔ بعدی خودکار شروع شود.
+- Before every event, the config + state of all cycles and the
+  `ticket → spread` map are saved to file. On return, the code rebuilds and
+  re-tracks cycles by scanning orders by magic, and continues under the normal
+  rules.
+- A periodic full reconciliation pass and a reconnect detector re-sync the
+  in-memory state with the live order pool (self-healing against missed events).
+- If a cycle's unified TP was hit server-side while the EA was off: the unused
+  limits of that cycle are deleted and the cycle is **deactivated** for manual
+  re-activation (clear message: "TP done; ready to restart").
+- If TP was not hit: the cycle keeps and manages its positions/limits as usual
+  until TP, then auto-starts the next generation.
 
-## ۱۰) UI پیشرفته
+## 10) Account-wide order cap
 
-- پنل اصلی: ساخت چرخه (انتخاب نماد + جهت)، Activate/Save/Delete، دکمه‌های
-  Close Now / Stop-After-TP / Detach، Minimize/Restore.
-- هر ردیف چرخه: نماد، جهت، وضعیت (Waiting/Running/StopAfterTP/...)، **سود/زیان زندهٔ
-  مجموع**، تعداد پوزیشن‌ها/لایهٔ فعلی، BE و TP نهایی فعلی.
-- دیالوگ کانفیگ هر چرخه: جدول لایه‌ها (فاصله پیپ.پوینت + لات سنتی، فاصلهٔ تجمعی)،
-  baseTP، defaultSpread، maxSpread، تیک‌های useSpread/useSwap، مقدار سواپ و روزِ
-  Triple، آستانهٔ ROC، آستانهٔ اسلیپیج.
-- محدودیت ۱۰۰ پوزیشن/سفارشِ حساب در سراسر سیستم لحاظ و کنترل می‌شود.
+- The account allows at most 100 simultaneous orders+positions. The EA tracks
+  this (`InpAccountMaxOrders`). A cycle that cannot place an order because the
+  cap is full moves to the **BLOCKED** state and automatically re-arms once room
+  frees.
 
-## ۱۱) ساختار فایل‌ها
+## 11) Master kill-switch
+
+- A global `TRADING: ON/OFF` switch on the panel. When OFF, the EA places no
+  NEW orders (no new cycles, no new limits, no recovery market fills) but keeps
+  all existing positions and their TP/SL management intact.
+
+## 12) Advanced UI
+
+- Main panel: create cycle (symbol + direction), Activate/Save/Delete,
+  Close Now / Stop-After-TP / Detach buttons, master kill-switch,
+  Minimize/Restore, account order counter, and an activity log feed.
+- Each cycle row: symbol, direction, state, live aggregate P/L, open-position
+  count, current BE and unified TP.
+- Per-cycle config dialog: layer table (spacing pips + lot), baseTP,
+  **Stop Loss (pips)**, defaultSpread, maxSpread, startMaxSpread, swap L/S,
+  triple-swap day, ROC threshold/period/TF, slippage/deviation, and toggles for
+  spread-in-TP, swap-in-TP, swap AUTO/MANUAL, start-spread filter, ROC filter,
+  and spacing mode (step/absolute).
+
+## 13) File layout
 
 ```
-MQL4/Experts/DCA_Pro.mq4         — نقطهٔ ورود (OnInit/OnTick/OnTimer/OnChartEvent)
-MQL4/Include/DCAPro/Defs.mqh     — enum/struct/ثابت‌ها/ورودی‌ها
-MQL4/Include/DCAPro/Utils.mqh    — پیپ/پوینت، اسپرد، ROC، سواپ، money/pip، لاگ
-MQL4/Include/DCAPro/Persistence.mqh — ذخیره/بازیابی چرخه‌ها و spread map
-MQL4/Include/DCAPro/CycleManager.mqh — هستهٔ منطق چرخه‌ها و سناریوها
-MQL4/Include/DCAPro/Panel.mqh    — UI
+MQL4/Experts/DCA_Pro.mq4            — entry point (OnInit/OnTick/OnTimer/OnChartEvent)
+MQL4/Include/DCAPro/Defs.mqh        — enums / struct / constants
+MQL4/Include/DCAPro/Utils.mqh       — pip/point, spread, ROC, swap, money/pip, log
+MQL4/Include/DCAPro/Persistence.mqh — save/load cycles & spread map
+MQL4/Include/DCAPro/CycleManager.mqh— core cycle logic and scenarios
+MQL4/Include/DCAPro/Panel.mqh       — UI
 ```
 
-## ۱۲) محدودیت‌ها/نکات
+## 14) Notes / limitations
 
-- این محیط متاتریدر ندارد؛ کد با دقت نوشته می‌شود اما کامپایل نهایی باید در
-  MetaEditor شما انجام شود. در صورت تمایل، راهنمای نصب و رفع خطاهای احتمالی کامپایل را
-  هم انجام می‌دهم.
+- This environment has no MetaTrader; the code is written carefully but the
+  final compile must be done in your MetaEditor (F7). Send any compile errors
+  and they will be fixed quickly.

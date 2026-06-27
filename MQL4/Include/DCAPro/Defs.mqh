@@ -34,7 +34,8 @@ enum CycleState
    ST_RUNNING      = 3, // has the market layer / live orders
    ST_STOP_AFTER_TP= 4, // will deactivate after next TP
    ST_DONE         = 5, // TP hit while we were off; waiting for manual re-activate
-   ST_DETACHED     = 6  // control removed, orders left untouched (slot will be freed)
+   ST_DETACHED     = 6, // control removed, orders left untouched (slot will be freed)
+   ST_BLOCKED      = 7  // cannot place orders: account-wide order cap reached
   };
 
 //--- per-layer runtime state ----------------------------------------
@@ -67,18 +68,22 @@ struct Cycle
 
    //--- configuration (per layer)
    int      layerCount;
-   double   spacing[DCA_MAX_LAYERS];  // pips from the PREVIOUS layer (index 0 unused/0)
+   int      spacingMode;              // 0 = step (from previous layer), 1 = absolute (cumulative from reference)
+   double   spacing[DCA_MAX_LAYERS];  // pips: step from previous layer, or cumulative from reference (per spacingMode); index 0 = 0
    double   lots[DCA_MAX_LAYERS];     // input volume per layer (terminal lots after factor)
 
    //--- configuration (cycle level)
    double   baseTP;          // base take-profit in pips
+   double   slPips;          // per-cycle fixed stop-loss distance (pips); applied to EVERY order from its own entry
    double   defaultSpread;   // assumed spread (pips) for not-yet-filled limits
    double   maxSpread;       // pause/cancel limits above this spread (pips)
    double   startMaxSpread;  // do not OPEN a new cycle above this spread (pips)
-   bool     useSpreadInTP;   // include weighted spread cost in final TP
+   bool     useStartSpreadFilter; // gate 1 on/off (start spread)
+   bool     useSpreadInTP;   // include simple-average spread cost in final TP
    bool     useSwapInTP;     // include negative swap cost in final TP
    SwapMode swapMode;
-   double   swapPerLotPerNight; // signed value (e.g. -7) per 1.0 lot per night
+   double   swapLong;        // signed swap (e.g. -7) per 1.0 std lot per night, LONG side
+   double   swapShort;       // signed swap per 1.0 std lot per night, SHORT side
    int      tripleSwapDay;   // day-of-week with triple swap (0=Sun..6=Sat), default 3=Wed
    bool     useROCFilter;
    double   rocThreshold;    // e.g. 0.28
@@ -104,6 +109,7 @@ struct Cycle
    double   livePnL;         // last computed floating P/L (account currency)
    int      openPositions;   // count of open positions
    datetime lastActionTime;
+   datetime lastSwapDay;     // last broker calendar day the rollover TP recompute ran
   };
 
 #endif // __DCAPRO_DEFS_MQH__

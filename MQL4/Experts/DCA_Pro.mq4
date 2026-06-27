@@ -15,19 +15,27 @@
 #include <DCAPro/Panel.mqh>
 
 //--- inputs ----------------------------------------------------------
-input int    InpMagicBase     = 990000;  // base magic (each cycle = base + id)
-input double InpLotInputFactor = 1.0;     // multiplier: input(cent lots) -> terminal lots
-input int    InpTimerSeconds  = 1;        // UI / persistence timer (seconds)
-input bool   InpAutosave      = true;     // periodically persist cycles & spread map
+input int    InpMagicBase       = 990000; // base magic (each cycle = base + id)
+input double InpLotInputFactor  = 1.0;    // multiplier: input(cent lots) -> terminal lots
+input int    InpTimerSeconds    = 1;      // UI / persistence timer (seconds)
+input bool   InpAutosave        = true;   // periodically persist cycles & spread map
+input bool   InpMasterEnabled   = true;   // master switch: allow NEW orders (positions always kept)
+input int    InpAccountMaxOrders= 100;    // account-wide cap on pending+market orders
+input int    InpReconcileSeconds= 30;     // full reconcile-with-broker interval (seconds)
 
 //--- internal --------------------------------------------------------
-datetime g_lastSave = 0;
+datetime g_lastSave      = 0;
+datetime g_lastReconcile = 0;
+bool     g_wasConnected  = true;
 
 //+------------------------------------------------------------------+
 int OnInit()
   {
-   g_magicBase = InpMagicBase;
-   g_lotFactor = InpLotInputFactor;
+   g_magicBase       = InpMagicBase;
+   g_lotFactor       = InpLotInputFactor;
+   g_masterEnabled   = InpMasterEnabled;
+   g_accountMaxOrders= MathMax(1, InpAccountMaxOrders);
+   g_wasConnected    = IsConnected();
 
    // restore persisted state, then reconcile with live orders
    LoadSpreadMap();
@@ -73,6 +81,25 @@ void OnTick()
 //+------------------------------------------------------------------+
 void OnTimer()
   {
+   // detect a reconnect (terminal regained the trade server) -> reconcile now
+   bool connected = IsConnected();
+   if(connected && !g_wasConnected)
+     {
+      DcaLog("Reconnected to server -> reconciling cycles with live orders.");
+      for(int i = 0; i < g_cycleCount; i++)
+         RebuildCycleFromOrders(g_cycles[i]);
+      g_lastReconcile = TimeCurrent();
+     }
+   g_wasConnected = connected;
+
+   // periodic full reconciliation pass (self-heal against missed events)
+   if(InpReconcileSeconds > 0 && TimeCurrent() - g_lastReconcile >= InpReconcileSeconds)
+     {
+      for(int i = 0; i < g_cycleCount; i++)
+         RebuildCycleFromOrders(g_cycles[i]);
+      g_lastReconcile = TimeCurrent();
+     }
+
    // ensure logic keeps running even without ticks (e.g. weekend recovery checks)
    for(int i = 0; i < g_cycleCount; i++)
       OnCycleTick(g_cycles[i]);

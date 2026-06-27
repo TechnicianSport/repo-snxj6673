@@ -10,11 +10,31 @@
 #include "Defs.mqh"
 
 //+------------------------------------------------------------------+
-//| Logging                                                          |
+//| Logging  (terminal log + in-memory ring buffer for the UI feed)  |
 //+------------------------------------------------------------------+
+#define DCA_LOG_LINES 8        // how many recent events the UI feed keeps
+string g_logRing[DCA_LOG_LINES];
+int    g_logHead = 0;          // index of the most-recent line
+bool   g_logInit = false;
+
 void DcaLog(const string msg)
   {
    Print("[DCAPro] ", msg);
+   if(!g_logInit)
+     {
+      for(int i = 0; i < DCA_LOG_LINES; i++) g_logRing[i] = "";
+      g_logInit = true;
+     }
+   g_logHead = (g_logHead + 1) % DCA_LOG_LINES;
+   g_logRing[g_logHead] = StringFormat("%s  %s", TimeToString(TimeCurrent(), TIME_MINUTES), msg);
+  }
+
+//--- return the i-th most-recent log line (0 = newest)
+string DcaLogLine(int i)
+  {
+   if(i < 0 || i >= DCA_LOG_LINES) return("");
+   int idx = ((g_logHead - i) % DCA_LOG_LINES + DCA_LOG_LINES) % DCA_LOG_LINES;
+   return(g_logRing[idx]);
   }
 
 //+------------------------------------------------------------------+
@@ -183,6 +203,35 @@ int SwapNightsTonight(int tripleDay)
   {
    int dow = DowOf(TimeCurrent());
    return(dow == tripleDay ? 3 : 1);
+  }
+
+//+------------------------------------------------------------------+
+//| Total swap-nights accrued for a position open since 'openTime',   |
+//| applying triple-swap weighting on the configured day and skipping  |
+//| the weekend rollovers (which the triple-swap day already covers).   |
+//+------------------------------------------------------------------+
+int SwapNightsHeld(datetime openTime, int tripleDay)
+  {
+   if(openTime <= 0) return(0);
+   datetime cur  = TimeCurrent();
+   if(cur <= openTime) return(0);
+   datetime day0 = openTime - (openTime % 86400); // midnight of the open day
+   int nights = 0;
+   for(datetime d = day0 + 86400; d <= cur; d += 86400)
+     {
+      int dow = TimeDayOfWeek(d);
+      if(dow == 0 || dow == 6) continue;          // Sat/Sun: no separate charge
+      nights += (dow == tripleDay ? 3 : 1);
+     }
+   return(nights);
+  }
+
+//--- did the broker calendar day change since 'last'? (rollover detector)
+bool DayChanged(datetime last)
+  {
+   if(last <= 0) return(true);
+   datetime cur = TimeCurrent();
+   return((cur / 86400) != (last / 86400));
   }
 
 #endif // __DCAPRO_UTILS_MQH__

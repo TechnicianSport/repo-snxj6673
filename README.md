@@ -2,8 +2,9 @@
 
 Advanced two-direction, multi-cycle **DCA Expert Advisor** for MetaTrader 4,
 built for cent accounts and 5-digit brokers, with precise volume-weighted
-break-even / take-profit math, high-spread handling, full crash/disconnect
-recovery, and an advanced on-chart UI.
+break-even, simple-average spread-cost take-profit math, a mandatory per-cycle
+fixed stop-loss, high-spread handling, full crash/disconnect recovery, a master
+kill-switch, and an advanced on-chart UI.
 
 ## Layout
 ```
@@ -13,8 +14,8 @@ MQL4/Include/DCAPro/Utils.mqh     - pip/point, spread, ROC, swap, money/pip
 MQL4/Include/DCAPro/Persistence.mqh - save/load cycles + spread map (recovery)
 MQL4/Include/DCAPro/CycleManager.mqh - core cycle logic & scenarios
 MQL4/Include/DCAPro/Panel.mqh     - advanced UI
-docs/PLAN.md                      - full feature & math plan (FA)
-docs/USAGE.md                     - install & usage (FA/EN)
+docs/PLAN.md                      - full feature & math plan
+docs/USAGE.md                     - install & usage
 ```
 
 See **docs/PLAN.md** for the complete specification and formulas, and

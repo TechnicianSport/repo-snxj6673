@@ -133,6 +133,7 @@ string StateText(CycleState s)
       case ST_STOP_AFTER_TP: return("STOP@TP");
       case ST_DONE:          return("DONE");
       case ST_DETACHED:      return("DETACHED");
+      case ST_BLOCKED:       return("BLOCKED");
      }
    return("-");
   }
@@ -149,7 +150,7 @@ void BuildConfigDialog(int cid)
    Cycle c = g_cycles[idx];
 
    int x = UI_X, y = UI_Y, w = UI_W;
-   int H = 360;
+   int H = 432;
    UiRect(DCA_OBJ + "cfgbg", x, y, w, H, C_BG, C_SUB);
    UiLabel(DCA_OBJ + "cfgtitle", x + 10, y + 6,
            StringFormat("Config cycle #%d  %s %s", c.id, c.symbol, DirText(c.direction)), C_TXT, 10);
@@ -163,6 +164,9 @@ void BuildConfigDialog(int cid)
    UiLabel(DCA_OBJ + "l_btp", lx, ry + 4, "Base TP (pips):", C_SUB);
    UiEdit(DCA_OBJ + "e_btp", ex, ry, 90, 20, DoubleToString(c.baseTP, 2)); ry += rh;
 
+   UiLabel(DCA_OBJ + "l_sl", lx, ry + 4, "Stop Loss (pips, per order):", C_SUB);
+   UiEdit(DCA_OBJ + "e_sl", ex, ry, 90, 20, DoubleToString(c.slPips, 2)); ry += rh;
+
    UiLabel(DCA_OBJ + "l_dspr", lx, ry + 4, "Default spread (pips):", C_SUB);
    UiEdit(DCA_OBJ + "e_dspr", ex, ry, 90, 20, DoubleToString(c.defaultSpread, 2)); ry += rh;
 
@@ -172,8 +176,9 @@ void BuildConfigDialog(int cid)
    UiLabel(DCA_OBJ + "l_sspr", lx, ry + 4, "Start max spread (pips):", C_SUB);
    UiEdit(DCA_OBJ + "e_sspr", ex, ry, 90, 20, DoubleToString(c.startMaxSpread, 2)); ry += rh;
 
-   UiLabel(DCA_OBJ + "l_swap", lx, ry + 4, "Swap /lot/night (signed):", C_SUB);
-   UiEdit(DCA_OBJ + "e_swap", ex, ry, 90, 20, DoubleToString(c.swapPerLotPerNight, 2)); ry += rh;
+   UiLabel(DCA_OBJ + "l_swap", lx, ry + 4, "Swap L / S (pips/lot/night):", C_SUB);
+   UiEdit(DCA_OBJ + "e_swapl", ex, ry, 90, 20, DoubleToString(c.swapLong, 2));
+   UiEdit(DCA_OBJ + "e_swaps", ex + 100, ry, 90, 20, DoubleToString(c.swapShort, 2)); ry += rh;
 
    UiLabel(DCA_OBJ + "l_tday", lx, ry + 4, "Triple-swap day (0Sun..6Sat):", C_SUB);
    UiEdit(DCA_OBJ + "e_tday", ex, ry, 90, 20, IntegerToString(c.tripleSwapDay)); ry += rh;
@@ -197,6 +202,10 @@ void BuildConfigDialog(int cid)
    ry += rh;
    UiButton(DCA_OBJ + "t_uroc", lx, ry, 130, 20,
             "ROC filter: " + (c.useROCFilter ? "ON" : "OFF"), c.useROCFilter ? C_GREEN : C_BTN);
+   UiButton(DCA_OBJ + "t_ussp", lx + 140, ry, 130, 20,
+            "Start spread: " + (c.useStartSpreadFilter ? "ON" : "OFF"), c.useStartSpreadFilter ? C_GREEN : C_BTN);
+   UiButton(DCA_OBJ + "t_spm", lx + 280, ry, 150, 20,
+            "Spacing: " + (c.spacingMode == 1 ? "ABSOLUTE" : "STEP"), C_BTN2);
    ry += rh + 4;
 
    UiButton(DCA_OBJ + "b_save", lx, ry, 120, 24, "SAVE", C_GREEN);
@@ -215,6 +224,9 @@ void PanelRebuild()
    // title bar (always visible)
    UiRect(DCA_OBJ + "bar", x, y, w, UI_TITLEH, C_BAR, C_SUB);
    UiLabel(DCA_OBJ + "title", x + 8, y + 4, "DCA Pro  -  Multi-Cycle Manager", C_TXT, 10);
+   UiButton(DCA_OBJ + "kill", x + w - 150, y + 2, 120, 18,
+            g_masterEnabled ? "TRADING: ON" : "TRADING: OFF",
+            g_masterEnabled ? C_GREEN : C_RED);
    UiButton(DCA_OBJ + "min", x + w - 26, y + 2, 22, 18, g_uiMinimized ? "+" : "_", C_BTN);
 
    if(g_uiMinimized)
@@ -240,7 +252,7 @@ void PanelRebuild()
             g_uiNewDir == DIR_LONG ? C_GREEN : C_RED);
    UiButton(DCA_OBJ + "ncreate", x + 250, ny, 90, 20, "CREATE", C_BTN2);
    UiLabel(DCA_OBJ + "acc", x + 350, ny + 4,
-           StringFormat("Orders %d/%d", TotalLiveOrders(), DCA_ACCOUNT_MAX_ORDERS), C_SUB);
+           StringFormat("Orders %d/%d", TotalLiveOrders(), g_accountMaxOrders), C_SUB);
 
    // header row
    int hy = ny + UI_ROWH + 2;
@@ -264,6 +276,15 @@ void PanelRebuild()
       UiButton(DCA_OBJ + "del" + sfx, bx, ry, 30, 20, "Del", C_BTN);
       ry += UI_ROWH;
      }
+
+   // status / log feed (most recent first)
+   int ly = ry + 6;
+   UiLabel(DCA_OBJ + "logh", x + 8, ly, "Activity log:", C_SUB, 8); ly += 16;
+   for(int k = 0; k < 4; k++)
+     {
+      UiLabel(DCA_OBJ + "log" + IntegerToString(k), x + 14, ly, DcaLogLine(k), C_SUB, 8);
+      ly += 14;
+     }
   }
 
 //--- update only the dynamic text (no rebuild -> no flicker / focus loss)
@@ -271,7 +292,9 @@ void PanelRefresh()
   {
    if(g_uiMinimized || g_uiConfigCid >= 0) return;
    ObjectSetString(0, DCA_OBJ + "acc", OBJPROP_TEXT,
-                   StringFormat("Orders %d/%d", TotalLiveOrders(), DCA_ACCOUNT_MAX_ORDERS));
+                   StringFormat("Orders %d/%d", TotalLiveOrders(), g_accountMaxOrders));
+   for(int k = 0; k < 4; k++)
+      ObjectSetString(0, DCA_OBJ + "log" + IntegerToString(k), OBJPROP_TEXT, DcaLogLine(k));
    for(int i = 0; i < g_cycleCount; i++)
      {
       Cycle c = g_cycles[i];
@@ -302,16 +325,24 @@ void SaveConfigFromDialog(int cid)
    DeserializeLayers(g_cycles[idx], EditS("e_layers"));
    if(g_cycles[idx].layerCount < 1) g_cycles[idx].layerCount = 1;
    g_cycles[idx].baseTP         = EditD("e_btp");
+   g_cycles[idx].slPips         = EditD("e_sl");
    g_cycles[idx].defaultSpread  = EditD("e_dspr");
    g_cycles[idx].maxSpread      = EditD("e_mspr");
    g_cycles[idx].startMaxSpread = EditD("e_sspr");
-   g_cycles[idx].swapPerLotPerNight = EditD("e_swap");
+   g_cycles[idx].swapLong       = EditD("e_swapl");
+   g_cycles[idx].swapShort      = EditD("e_swaps");
    g_cycles[idx].tripleSwapDay  = EditI("e_tday");
    g_cycles[idx].rocThreshold   = EditD("e_rocth");
    g_cycles[idx].rocPeriod      = EditI("e_rocp");
    g_cycles[idx].rocTF          = EditI("e_roctf");
    g_cycles[idx].slipTolerance  = EditD("e_slip");
    g_cycles[idx].maxDeviation   = EditI("e_dev");
+   // Stop-Loss is mandatory: every order must carry one to be accepted.
+   if(g_cycles[idx].slPips <= 0.0)
+     {
+      g_cycles[idx].slPips = 50.0;
+      DcaLog(StringFormat("cid=%d Stop Loss must be > 0; reset to default 50 pips.", cid));
+     }
   }
 
 //=================================================================== //
@@ -336,6 +367,14 @@ void PanelOnClick(string name)
       PanelRebuild(); return;
      }
 
+   if(name == DCA_OBJ + "kill")
+     {
+      g_masterEnabled = !g_masterEnabled;
+      DcaLog(g_masterEnabled ? "Master switch ON: new orders allowed."
+                             : "Master switch OFF: no NEW orders (open positions kept).");
+      PanelRebuild(); return;
+     }
+
    // config dialog buttons
    if(g_uiConfigCid >= 0)
      {
@@ -351,6 +390,10 @@ void PanelOnClick(string name)
         { int i=FindCycleIndexById(g_uiConfigCid); if(i>=0){g_cycles[i].swapMode=(g_cycles[i].swapMode==SWAP_AUTO?SWAP_MANUAL:SWAP_AUTO);} PanelRebuild(); return; }
       if(name == DCA_OBJ + "t_uroc")
         { int i=FindCycleIndexById(g_uiConfigCid); if(i>=0){g_cycles[i].useROCFilter=!g_cycles[i].useROCFilter;} PanelRebuild(); return; }
+      if(name == DCA_OBJ + "t_ussp")
+        { int i=FindCycleIndexById(g_uiConfigCid); if(i>=0){g_cycles[i].useStartSpreadFilter=!g_cycles[i].useStartSpreadFilter;} PanelRebuild(); return; }
+      if(name == DCA_OBJ + "t_spm")
+        { int i=FindCycleIndexById(g_uiConfigCid); if(i>=0){g_cycles[i].spacingMode=(g_cycles[i].spacingMode==1?0:1);} PanelRebuild(); return; }
       return;
      }
 

@@ -14,8 +14,10 @@
 Cycle  g_cycles[];
 int    g_cycleCount = 0;
 int    g_magicBase  = 990000;    // overwritten from input in OnInit
-int    g_nextId     = 1;
+int    g_nextId     = 1;         // monotonic, never reused (persisted) -> no id collisions
 double g_lotFactor  = 1.0;       // input(cent lots) -> terminal lots multiplier
+bool   g_masterEnabled = true;   // master kill-switch: when false, no NEW orders are placed
+int    g_accountMaxOrders = DCA_ACCOUNT_MAX_ORDERS; // configurable account-wide cap
 
 //--- ticket -> recorded fill spread (pips), persisted for recovery ---
 int    g_sprTicket[];
@@ -55,14 +57,18 @@ int FindCycleIndexById(int id)
 void InitCycleDefaults(Cycle &c)
   {
    c.layerCount      = 0;
+   c.spacingMode     = 0;     // step mode (distance from previous layer)
    c.baseTP          = 5.0;
+   c.slPips          = 50.0;  // fixed stop-loss distance (pips) applied to every order
    c.defaultSpread   = 1.5;
    c.maxSpread       = 5.0;
    c.startMaxSpread  = 5.0;
+   c.useStartSpreadFilter = true;
    c.useSpreadInTP   = true;
    c.useSwapInTP     = true;
    c.swapMode        = SWAP_AUTO;
-   c.swapPerLotPerNight = 0.0;
+   c.swapLong        = 0.0;
+   c.swapShort       = 0.0;
    c.tripleSwapDay   = 3;     // Wednesday
    c.useROCFilter    = true;
    c.rocThreshold    = 0.28;
@@ -78,6 +84,7 @@ void InitCycleDefaults(Cycle &c)
    c.livePnL         = 0.0;
    c.openPositions   = 0;
    c.lastActionTime  = 0;
+   c.lastSwapDay     = 0;
    for(int i = 0; i < DCA_MAX_LAYERS; i++)
      {
       c.spacing[i]        = 0.0;
@@ -148,13 +155,49 @@ double ProfitSign(const Cycle &c)
    return(-AddSign(c)); // profit direction is opposite to the averaging direction
   }
 
-//--- cumulative distance (pips) of a layer from the reference price
+//--- effective signed swap rate (pips / 1.0 lot / night) for this cycle's side
+double EffectiveSwapRate(const Cycle &c)
+  {
+   return(c.direction == DIR_LONG ? c.swapLong : c.swapShort);
+  }
+
+//--- cumulative distance (pips) of a layer from the reference price.
+//    step mode    : spacing[i] is the gap from layer i-1, so we sum them.
+//    absolute mode: spacing[layer] is already the cumulative distance.
 double CumDist(const Cycle &c, int layer)
   {
+   if(layer <= 0) return(0.0);
+   if(c.spacingMode == 1)
+      return(c.spacing[layer]);
    double d = 0.0;
    for(int i = 1; i <= layer && i < c.layerCount; i++)
       d += c.spacing[i];
    return(d);
+  }
+
+//--- fixed per-cycle stop-loss price for an order opened at 'entry'.
+//    SL sits 'slPips' away from the entry in the LOSS direction, clamped so it
+//    never violates the broker's minimum stop distance from the live market.
+//    Returns 0 when SL is disabled (slPips <= 0).
+double SLPriceFor(const Cycle &c, double entry)
+  {
+   if(c.slPips <= 0.0) return(0.0);
+   string sym = c.symbol;
+   double pip = SymPip(sym);
+   // loss direction = opposite of profit direction
+   double sl  = entry - ProfitSign(c) * c.slPips * pip;
+   double minStop = MinStopDist(sym);
+   if(minStop > 0)
+     {
+      double mkt = (c.direction == DIR_LONG) ? MarketInfo(sym, MODE_BID)
+                                             : MarketInfo(sym, MODE_ASK);
+      if(mkt > 0)
+        {
+         if(c.direction == DIR_LONG && sl > mkt - minStop) sl = mkt - minStop;
+         if(c.direction == DIR_SHORT && sl < mkt + minStop) sl = mkt + minStop;
+        }
+     }
+   return(NormPrice(sym, sl));
   }
 
 //--- planned price level for a layer (includes reposition push)
@@ -165,22 +208,26 @@ double PlannedLayerPrice(const Cycle &c, int layer)
    return(NormPrice(c.symbol, c.referencePrice + AddSign(c) * dist * pip));
   }
 
-//--- open a market order for a layer; returns ticket or -1
+//--- open a market order for a layer; returns ticket or -1.
+//    Used in exactly two places: (1) layer-0 cycle start, (2) spread-spike
+//    nearest-skipped-layer recovery fill (Section 6.4). Asserted in OnCycleTick.
 int OpenMarketLayer(Cycle &c, int layer)
   {
+   if(!g_masterEnabled) return(-1);
    string sym = c.symbol;
    double lots = NormalizeLotsSym(sym, c.lots[layer] * g_lotFactor);
    int    cmd  = (c.direction == DIR_LONG) ? OP_BUY : OP_SELL;
-   double price= (cmd == OP_BUY) ? MarketInfo(sym, MODE_ASK) : MarketInfo(sym, MODE_BID);
+   double reqPrice = (cmd == OP_BUY) ? MarketInfo(sym, MODE_ASK) : MarketInfo(sym, MODE_BID);
    double spr  = SpreadPips(sym);
    // temporary TP, recomputed right after as part of the unified TP pass
    double tpDist = (c.baseTP + (c.useSpreadInTP ? spr : 0)) ;
-   double tp   = NormPrice(sym, price + ProfitSign(c) * PipsToPrice(sym, tpDist));
-   int ticket = OrderSend(sym, cmd, lots, NormPrice(sym, price), c.maxDeviation,
-                          0, tp, MakeComment(c.id, layer), c.magic, 0, clrNONE);
+   double tp   = NormPrice(sym, reqPrice + ProfitSign(c) * PipsToPrice(sym, tpDist));
+   double sl   = SLPriceFor(c, reqPrice); // broker requires an SL to register the order
+   int ticket = OrderSend(sym, cmd, lots, NormPrice(sym, reqPrice), c.maxDeviation,
+                          sl, tp, MakeComment(c.id, layer), c.magic, 0, clrNONE);
    if(ticket < 0)
      {
-      DcaLog(StringFormat("OpenMarketLayer FAILED cid=%d layer=%d err=%d", c.id, layer, GetLastError()));
+      DcaLog(StringFormat("market order FAILED cid=%d layer=%d err=%d", c.id, layer, GetLastError()));
       return(-1);
      }
    if(OrderSelect(ticket, SELECT_BY_TICKET))
@@ -192,27 +239,36 @@ int OpenMarketLayer(Cycle &c, int layer)
       SprMapSet(ticket, spr);
       if(layer == 0)
          c.referencePrice = OrderOpenPrice();
+      // adverse-slippage notice (TP already anchors to the real fill in RecomputeTP)
+      double adverse = ProfitSign(c) * (reqPrice - OrderOpenPrice()) / SymPip(sym);
+      if(adverse > c.slipTolerance)
+         DcaLog(StringFormat("cid=%d layer=%d adverse slippage %.1f pips > tol %.1f -> TP re-pushed",
+                             c.id, layer, adverse, c.slipTolerance));
      }
    c.lastActionTime = TimeCurrent();
    return(ticket);
   }
 
-//--- place a pending limit order for a layer; returns ticket or -1
+//--- place a pending limit order for a layer; returns ticket or -1.
+//    Returns -2 specifically when the account-wide order cap blocks placement,
+//    so the caller can flag BLOCKED_BY_ORDER_LIMIT and retry once room frees.
 int PlaceLimitLayer(Cycle &c, int layer)
   {
-   if(TotalLiveOrders() >= DCA_ACCOUNT_MAX_ORDERS) return(-1);
+   if(!g_masterEnabled) return(-1);
+   if(TotalLiveOrders() >= g_accountMaxOrders) return(-2);
    string sym = c.symbol;
    double lots = NormalizeLotsSym(sym, c.lots[layer] * g_lotFactor);
    int    cmd  = (c.direction == DIR_LONG) ? OP_BUYLIMIT : OP_SELLLIMIT;
    double price= PlannedLayerPrice(c, layer);
-   // temporary formal TP using the default (assumed) spread
+   // provisional formal TP using the default (assumed) spread (MT4 needs a TP)
    double tpDist = c.baseTP + (c.useSpreadInTP ? c.defaultSpread : 0);
    double tp   = NormPrice(sym, price + ProfitSign(c) * PipsToPrice(sym, tpDist));
-   int ticket = OrderSend(sym, cmd, lots, price, c.maxDeviation, 0, tp,
+   double sl   = SLPriceFor(c, price); // broker requires an SL to register the order
+   int ticket = OrderSend(sym, cmd, lots, price, c.maxDeviation, sl, tp,
                           MakeComment(c.id, layer), c.magic, 0, clrNONE);
    if(ticket < 0)
      {
-      DcaLog(StringFormat("PlaceLimitLayer FAILED cid=%d layer=%d price=%.5f err=%d",
+      DcaLog(StringFormat("limit order FAILED cid=%d layer=%d price=%.5f err=%d",
                           c.id, layer, price, GetLastError()));
       return(-1);
      }
@@ -223,16 +279,21 @@ int PlaceLimitLayer(Cycle &c, int layer)
    return(ticket);
   }
 
-//--- (re)place every not-yet-filled limit layer from the reference
-void PlaceAllPendingLimits(Cycle &c)
+//--- (re)place every not-yet-filled limit layer from the reference.
+//    Returns true if at least one layer could NOT be placed because the
+//    account-wide order cap is full (caller flags BLOCKED_BY_ORDER_LIMIT).
+bool PlaceAllPendingLimits(Cycle &c)
   {
+   bool blocked = false;
    for(int layer = 1; layer < c.layerCount; layer++)
      {
       int st = c.layerStateArr[layer];
       if(st == LS_FILLED || st == LS_CLOSED) continue;
-      if(st == LS_PENDING) continue; // already on server
-      PlaceLimitLayer(c, layer);
+      if(st == LS_PENDING || st == LS_CANCELLED) continue; // already on server / parked
+      int r = PlaceLimitLayer(c, layer);
+      if(r == -2) blocked = true;
      }
+   return(blocked);
   }
 
 //=================================================================== //
@@ -241,7 +302,7 @@ void PlaceAllPendingLimits(Cycle &c)
 bool StartFiltersOK(Cycle &c, string &reason)
   {
    double spr = SpreadPips(c.symbol);
-   if(spr > c.startMaxSpread)
+   if(c.useStartSpreadFilter && spr > c.startMaxSpread)
      {
       reason = StringFormat("waiting: spread %.1f > %.1f", spr, c.startMaxSpread);
       return(false);
@@ -262,36 +323,78 @@ bool StartFiltersOK(Cycle &c, string &reason)
 //=================================================================== //
 //  Final TP recomputation (the math core)                             //
 //=================================================================== //
+//--- Signed accrued swap cost of the cycle's open positions, in account
+//    currency (negative = the EA is paying swap).
+//      AUTO   : sum of the broker's actual OrderSwap() across open tickets.
+//      MANUAL : per-ticket projection using the user's signed swap rate
+//               (pips / 1.0 lot / night), the dynamically-derived money-per-pip,
+//               and the accrued nights-held (with triple-swap day weighting).
 double SwapMoney(Cycle &c)
   {
    double money = 0.0;
-   if(c.swapMode == SWAP_AUTO)
+   double rate  = EffectiveSwapRate(c);
+   double mppl  = MoneyPerPipPerLot(c.symbol);
+   for(int layer = 0; layer < c.layerCount; layer++)
      {
-      for(int layer = 0; layer < c.layerCount; layer++)
-        {
-         if(c.layerStateArr[layer] != LS_FILLED) continue;
-         if(OrderSelect(c.layerTicket[layer], SELECT_BY_TICKET) && OrderCloseTime() == 0)
-            money += OrderSwap();
-        }
-     }
-   else // SWAP_MANUAL projection of tonight's swap (per terminal lot)
-     {
-      double sumVol = 0.0;
-      for(int layer = 0; layer < c.layerCount; layer++)
-        {
-         if(c.layerStateArr[layer] != LS_FILLED) continue;
-         if(OrderSelect(c.layerTicket[layer], SELECT_BY_TICKET) && OrderCloseTime() == 0)
-            sumVol += OrderLots();
-        }
-      int nights = SwapNightsTonight(c.tripleSwapDay);
-      money = c.swapPerLotPerNight * sumVol * nights;
+      if(c.layerStateArr[layer] != LS_FILLED) continue;
+      if(!OrderSelect(c.layerTicket[layer], SELECT_BY_TICKET)) continue;
+      if(OrderCloseTime() != 0) continue;
+      if(c.swapMode == SWAP_AUTO)
+         money += OrderSwap();
+      else // MANUAL: dollars = lots * ($/pip/lot) * (pips/night) * nights-held
+         money += OrderLots() * mppl * rate * SwapNightsHeld(OrderOpenTime(), c.tripleSwapDay);
      }
    return(money);
   }
 
+//--- projected volume-weighted breakeven if every layer up to & including
+//    'upTo' were open: filled layers use their REAL open price/lots; not-yet-
+//    filled layers use their planned price and configured lot (Section 5.5).
+double ProjectedBE(Cycle &c, int upTo)
+  {
+   double sumVol = 0.0, sumPV = 0.0;
+   for(int layer = 0; layer <= upTo && layer < c.layerCount; layer++)
+     {
+      int    st  = c.layerStateArr[layer];
+      double vol, price;
+      if(st == LS_FILLED && OrderSelect(c.layerTicket[layer], SELECT_BY_TICKET) && OrderCloseTime() == 0)
+        { vol = OrderLots(); price = OrderOpenPrice(); }
+      else
+        { vol = NormalizeLotsSym(c.symbol, c.lots[layer] * g_lotFactor); price = PlannedLayerPrice(c, layer); }
+      sumVol += vol;
+      sumPV  += price * vol;
+     }
+   if(sumVol <= 0) return(0.0);
+   return(sumPV / sumVol);
+  }
+
+//--- refresh the provisional TP (and fixed SL) carried by every resting pending
+//    limit order, so they always show the best current estimate before filling.
+void UpdatePendingProvisionalTPs(Cycle &c)
+  {
+   double pip = SymPip(c.symbol);
+   for(int layer = 1; layer < c.layerCount; layer++)
+     {
+      if(c.layerStateArr[layer] != LS_PENDING) continue;
+      int ticket = c.layerTicket[layer];
+      if(!OrderSelect(ticket, SELECT_BY_TICKET) || OrderCloseTime() != 0) continue;
+      double projBE = ProjectedBE(c, layer);
+      if(projBE <= 0) continue;
+      double tpDist = c.baseTP + (c.useSpreadInTP ? c.defaultSpread : 0.0);
+      double tp     = NormPrice(c.symbol, projBE + ProfitSign(c) * tpDist * pip);
+      double sl     = SLPriceFor(c, OrderOpenPrice());
+      if(MathAbs(OrderTakeProfit() - tp) < SymPoint(c.symbol) &&
+         MathAbs(OrderStopLoss()   - sl) < SymPoint(c.symbol)) continue;
+      if(!OrderModify(ticket, OrderOpenPrice(), sl, tp, 0, clrNONE))
+         DcaLog(StringFormat("modify pending TP failed t=%d err=%d", ticket, GetLastError()));
+      else
+         c.layerPlanTP[layer] = tp;
+     }
+  }
+
 void RecomputeTP(Cycle &c)
   {
-   double sumVol = 0.0, sumEntryVol = 0.0, sumSprVol = 0.0;
+   double sumVol = 0.0, sumEntryVol = 0.0, sumSpr = 0.0;
    int    nOpen  = 0;
    for(int layer = 0; layer < c.layerCount; layer++)
      {
@@ -301,15 +404,15 @@ void RecomputeTP(Cycle &c)
       double vol = OrderLots();
       sumVol      += vol;
       sumEntryVol += OrderOpenPrice() * vol;
-      sumSprVol   += c.layerOpenSpread[layer] * vol;
+      sumSpr      += c.layerOpenSpread[layer];   // SIMPLE sum -> simple average below
       nOpen++;
      }
    c.openPositions = nOpen;
    if(nOpen == 0 || sumVol <= 0) return;
 
    double sym_pip   = SymPip(c.symbol);
-   double BE        = sumEntryVol / sumVol;
-   double wSpread   = sumSprVol / sumVol;                  // weighted avg spread (pips)
+   double BE        = sumEntryVol / sumVol;                // volume-weighted breakeven
+   double avgSpread = sumSpr / nOpen;                      // SIMPLE average registered spread (8.3/8.7)
    double swapM     = SwapMoney(c);
    double mppl      = MoneyPerPipPerLot(c.symbol);
    double swapDist  = 0.0;
@@ -317,7 +420,7 @@ void RecomputeTP(Cycle &c)
       swapDist = (-swapM) / (sumVol * mppl);               // pips to cover negative swap
 
    double tpDist = c.baseTP
-                 + (c.useSpreadInTP ? wSpread : 0.0)
+                 + (c.useSpreadInTP ? avgSpread : 0.0)
                  + swapDist;
 
    double tpPrice = NormPrice(c.symbol, BE + ProfitSign(c) * tpDist * sym_pip);
@@ -325,21 +428,27 @@ void RecomputeTP(Cycle &c)
    c.currentBE = BE;
    c.currentTP = tpPrice;
 
-   // push all open positions to the single unified TP
+   // push all open positions to the single unified TP (keep their fixed SL)
    double minStop = MinStopDist(c.symbol);
    for(int layer = 0; layer < c.layerCount; layer++)
      {
       if(c.layerStateArr[layer] != LS_FILLED) continue;
       if(!OrderSelect(c.layerTicket[layer], SELECT_BY_TICKET)) continue;
       if(OrderCloseTime() != 0) continue;
-      if(MathAbs(OrderTakeProfit() - tpPrice) < SymPoint(c.symbol)) continue;
+      // preserve the cycle's fixed SL; (re)derive it if the order has none yet
+      double sl = (OrderStopLoss() > 0.0) ? OrderStopLoss() : SLPriceFor(c, OrderOpenPrice());
+      if(MathAbs(OrderTakeProfit() - tpPrice) < SymPoint(c.symbol) &&
+         MathAbs(OrderStopLoss()   - sl)      < SymPoint(c.symbol)) continue;
       // validate against broker min stop distance from current market
       double ref = (OrderType() == OP_BUY) ? MarketInfo(c.symbol, MODE_BID)
                                            : MarketInfo(c.symbol, MODE_ASK);
-      if(MathAbs(tpPrice - ref) < minStop) continue; // too close right now, retry later
-      if(!OrderModify(OrderTicket(), OrderOpenPrice(), OrderStopLoss(), tpPrice, 0, clrNONE))
-         DcaLog(StringFormat("OrderModify TP failed t=%d err=%d", OrderTicket(), GetLastError()));
+      if(MathAbs(tpPrice - ref) < minStop) continue; // too close right now, retry next tick
+      if(!OrderModify(OrderTicket(), OrderOpenPrice(), sl, tpPrice, 0, clrNONE))
+         DcaLog(StringFormat("modify TP failed t=%d err=%d", OrderTicket(), GetLastError()));
      }
+
+   // keep resting pending limits' provisional TP/SL up to date too (8.4)
+   UpdatePendingProvisionalTPs(c);
   }
 
 //=================================================================== //
@@ -536,6 +645,7 @@ void ResetCycleRuntime(Cycle &c)
    c.pushOffsetPips = 0.0;
    c.limitsParked = false;
    c.openPositions = 0;
+   c.lastSwapDay = 0;
    for(int i = 0; i < DCA_MAX_LAYERS; i++)
      {
       c.layerStateArr[i]  = LS_NONE;
@@ -574,10 +684,29 @@ void OnCycleTick(Cycle &c)
       return;
      }
 
+   // 0) account-wide order cap recovery: a BLOCKED cycle re-arms once room frees
+   if(c.state == ST_BLOCKED)
+     {
+      if(TotalLiveOrders() < g_accountMaxOrders)
+        {
+         c.state = ST_WAITING;
+         DcaLog(StringFormat("cid=%d order cap cleared -> waiting.", c.id));
+        }
+      else
+         return;
+     }
+
    // 1) try to start when waiting
    if(c.state == ST_WAITING)
      {
       string reason;
+      if(!g_masterEnabled) return;                 // master kill-switch: no new orders
+      if(TotalLiveOrders() >= g_accountMaxOrders)   // would breach the account cap
+        {
+         c.state = ST_BLOCKED;
+         DcaLog(StringFormat("cid=%d blocked: order cap %d reached.", c.id, g_accountMaxOrders));
+         return;
+        }
       if(StartFiltersOK(c, reason))
         {
          if(OpenMarketLayer(c, 0) > 0 && c.referencePrice > 0)
@@ -597,7 +726,7 @@ void OnCycleTick(Cycle &c)
    bool tpDone = false;
    bool newFill = DetectFillsAndCloses(c, tpDone);
 
-   // 3) cycle finished by TP
+   // 3) cycle finished (final TP reached, or the fixed SL closed every position)
    if(tpDone)
      {
       DeletePendingOfCycle(c);
@@ -605,12 +734,12 @@ void OnCycleTick(Cycle &c)
       if(c.state == ST_STOP_AFTER_TP)
         {
          c.state = ST_IDLE;
-         DcaLog(StringFormat("cid=%d TP hit -> stopped (Stop-After-TP).", c.id));
+         DcaLog(StringFormat("cid=%d closed -> stopped (Stop-After-TP).", c.id));
         }
       else
         {
-         c.state = ST_WAITING; // auto restart same config
-         DcaLog(StringFormat("cid=%d TP hit -> restarting next cycle.", c.id));
+         c.state = ST_WAITING; // auto restart same config (new generation)
+         DcaLog(StringFormat("cid=%d closed -> restarting next generation.", c.id));
         }
       return;
      }
@@ -628,13 +757,18 @@ void OnCycleTick(Cycle &c)
       DcaLog(StringFormat("cid=%d spread normal %.1f -> limits restored.", c.id, spr));
      }
 
-   // 5) top-up any limits that could not be placed earlier (e.g. 100-order cap)
-   if(!c.limitsParked && c.referencePrice > 0)
+   // 5) top-up any limits that could not be placed earlier (e.g. order cap)
+   if(!c.limitsParked && c.referencePrice > 0 && g_masterEnabled)
       PlaceAllPendingLimits(c);
 
-   // 6) recompute unified TP on new fills
+   // 6) recompute unified TP on new fills, OR once per broker rollover for swap (8.9)
    if(newFill)
       RecomputeTP(c);
+   else if(c.useSwapInTP && c.openPositions > 0 && DayChanged(c.lastSwapDay))
+     {
+      c.lastSwapDay = TimeCurrent();
+      RecomputeTP(c);
+     }
 
    ComputeLivePnL(c);
   }
