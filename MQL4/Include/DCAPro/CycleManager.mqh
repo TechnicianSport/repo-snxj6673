@@ -622,7 +622,8 @@ void DeletePendingOfCycle(Cycle &c)
         {
          int tp = OrderType();
          if(tp == OP_BUYLIMIT || tp == OP_SELLLIMIT || tp == OP_BUYSTOP || tp == OP_SELLSTOP)
-            OrderDelete(ticket, clrNONE);
+            if(!OrderDelete(ticket, clrNONE))
+               DcaLog(StringFormat("OrderDelete failed t=%d err=%d", ticket, GetLastError()));
         }
       c.layerStateArr[layer] = LS_NONE;
       c.layerTicket[layer]   = 0;

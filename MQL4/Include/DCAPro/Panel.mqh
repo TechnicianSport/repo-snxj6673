@@ -112,7 +112,7 @@ void UiEdit(string name, int x, int y, int w, int h, string text)
 
 void UiDeleteAll()
   {
-   for(int i = ObjectsTotal(0) - 1; i >= 0; i--)
+   for(int i = ObjectsTotal(0, -1, -1) - 1; i >= 0; i--)
      {
       string nm = ObjectName(0, i);
       if(StringFind(nm, DCA_OBJ) == 0)
