@@ -74,7 +74,7 @@ struct Cycle
 
    //--- configuration (cycle level)
    double   baseTP;          // base take-profit in pips
-   double   slPips;          // per-cycle fixed stop-loss distance (pips); applied to EVERY order from its own entry
+   double   slPrice;         // per-cycle fixed stop-loss PRICE level; identical on EVERY ticket, never recalculated (0 = unset)
    double   defaultSpread;   // assumed spread (pips) for not-yet-filled limits
    double   maxSpread;       // pause/cancel limits above this spread (pips)
    double   startMaxSpread;  // do not OPEN a new cycle above this spread (pips)

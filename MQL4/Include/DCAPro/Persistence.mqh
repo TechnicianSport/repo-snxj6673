@@ -56,7 +56,7 @@ void SaveCycles()
       string line = StringFormat(
          "%d\t%d\t%s\t%d\t%d\t%.5f\t%.5f\t%.5f\t%.5f\t%.5f\t%d\t%d\t%d\t%d\t%.5f\t%.5f\t%d\t%d\t%.5f\t%d\t%d\t%.5f\t%d\t%d\t%.5f\t%.5f\t%d\t%s",
          c.id, c.magic, c.symbol, (int)c.direction, (int)c.state,
-         c.baseTP, c.slPips, c.defaultSpread, c.maxSpread, c.startMaxSpread,
+         c.baseTP, c.slPrice, c.defaultSpread, c.maxSpread, c.startMaxSpread,
          (c.useStartSpreadFilter ? 1 : 0), (c.useSpreadInTP ? 1 : 0), (c.useSwapInTP ? 1 : 0), (int)c.swapMode,
          c.swapLong, c.swapShort, c.tripleSwapDay, (c.useROCFilter ? 1 : 0),
          c.rocThreshold, c.rocPeriod, c.rocTF, c.slipTolerance, c.maxDeviation,
@@ -102,7 +102,7 @@ bool LoadCycles()
          g_cycles[idx].direction     = (CycleDir)(int)StringToInteger(f[3]);
          g_cycles[idx].state         = (CycleState)(int)StringToInteger(f[4]);
          g_cycles[idx].baseTP        = StringToDouble(f[5]);
-         g_cycles[idx].slPips        = StringToDouble(f[6]);
+         g_cycles[idx].slPrice       = StringToDouble(f[6]);
          g_cycles[idx].defaultSpread = StringToDouble(f[7]);
          g_cycles[idx].maxSpread     = StringToDouble(f[8]);
          g_cycles[idx].startMaxSpread= StringToDouble(f[9]);

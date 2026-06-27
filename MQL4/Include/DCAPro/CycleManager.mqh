@@ -59,7 +59,7 @@ void InitCycleDefaults(Cycle &c)
    c.layerCount      = 0;
    c.spacingMode     = 0;     // step mode (distance from previous layer)
    c.baseTP          = 5.0;
-   c.slPips          = 50.0;  // fixed stop-loss distance (pips) applied to every order
+   c.slPrice         = 0.0;   // fixed stop-loss PRICE (0 = unset; must be set before the cycle can trade)
    c.defaultSpread   = 1.5;
    c.maxSpread       = 5.0;
    c.startMaxSpread  = 5.0;
@@ -175,29 +175,49 @@ double CumDist(const Cycle &c, int layer)
    return(d);
   }
 
-//--- fixed per-cycle stop-loss price for an order opened at 'entry'.
-//    SL sits 'slPips' away from the entry in the LOSS direction, clamped so it
-//    never violates the broker's minimum stop distance from the live market.
-//    Returns 0 when SL is disabled (slPips <= 0).
-double SLPriceFor(const Cycle &c, double entry)
+//--- the cycle's single fixed stop-loss PRICE, identical on every ticket
+//    (Option A: broker-native per-ticket SL all pointing at the same price, so
+//    the whole basket closes server-side at that level even if the EA is down).
+//    The SL price is configured once and NEVER recalculated as layers fill.
+//    Returns 0 when unset (slPrice <= 0) -> the cycle must not trade.
+bool SLConfigured(const Cycle &c) { return(c.slPrice > 0.0); }
+
+double SLPriceFor(const Cycle &c)
   {
-   if(c.slPips <= 0.0) return(0.0);
+   if(c.slPrice <= 0.0) return(0.0);
+   return(NormPrice(c.symbol, c.slPrice));
+  }
+
+//--- config-time validity check (warning, NOT auto-correction). Ensures the
+//    fixed SL is on the safe/protective side of the deepest configured DCA
+//    layer, so it cannot trigger before the grid has finished laying out.
+//    Uses the real reference once known, otherwise the current market as proxy.
+bool ValidateSLPlacement(const Cycle &c, string &warn)
+  {
+   warn = "";
+   if(!SLConfigured(c)) { warn = "Stop Loss price is not set (must be > 0)."; return(false); }
    string sym = c.symbol;
    double pip = SymPip(sym);
-   // loss direction = opposite of profit direction
-   double sl  = entry - ProfitSign(c) * c.slPips * pip;
-   double minStop = MinStopDist(sym);
-   if(minStop > 0)
+   double ref = (c.referencePrice > 0.0) ? c.referencePrice
+              : ((c.direction == DIR_LONG) ? MarketInfo(sym, MODE_ASK)
+                                           : MarketInfo(sym, MODE_BID));
+   if(ref <= 0.0) return(true); // cannot evaluate yet
+   int deepest = c.layerCount - 1;
+   double deepestPrice = NormPrice(sym, ref + AddSign(c) * CumDist(c, deepest) * pip);
+   double buffer = MathMax(c.maxSpread, 1.0) * pip; // small safety buffer
+   if(c.direction == DIR_LONG)
      {
-      double mkt = (c.direction == DIR_LONG) ? MarketInfo(sym, MODE_BID)
-                                             : MarketInfo(sym, MODE_ASK);
-      if(mkt > 0)
-        {
-         if(c.direction == DIR_LONG && sl > mkt - minStop) sl = mkt - minStop;
-         if(c.direction == DIR_SHORT && sl < mkt + minStop) sl = mkt + minStop;
-        }
+      if(c.slPrice >= deepestPrice - buffer)
+        { warn = StringFormat("SL %.5f is not safely below the deepest BuyLimit %.5f (buffer %.1f pips).",
+                              c.slPrice, deepestPrice, buffer / pip); return(false); }
      }
-   return(NormPrice(sym, sl));
+   else
+     {
+      if(c.slPrice <= deepestPrice + buffer)
+        { warn = StringFormat("SL %.5f is not safely above the deepest SellLimit %.5f (buffer %.1f pips).",
+                              c.slPrice, deepestPrice, buffer / pip); return(false); }
+     }
+   return(true);
   }
 
 //--- planned price level for a layer (includes reposition push)
@@ -214,6 +234,11 @@ double PlannedLayerPrice(const Cycle &c, int layer)
 int OpenMarketLayer(Cycle &c, int layer)
   {
    if(!g_masterEnabled) return(-1);
+   if(!SLConfigured(c))
+     {
+      DcaLog(StringFormat("cid=%d cannot place order: Stop Loss price not set.", c.id));
+      return(-1);
+     }
    string sym = c.symbol;
    double lots = NormalizeLotsSym(sym, c.lots[layer] * g_lotFactor);
    int    cmd  = (c.direction == DIR_LONG) ? OP_BUY : OP_SELL;
@@ -222,7 +247,7 @@ int OpenMarketLayer(Cycle &c, int layer)
    // temporary TP, recomputed right after as part of the unified TP pass
    double tpDist = (c.baseTP + (c.useSpreadInTP ? spr : 0)) ;
    double tp   = NormPrice(sym, reqPrice + ProfitSign(c) * PipsToPrice(sym, tpDist));
-   double sl   = SLPriceFor(c, reqPrice); // broker requires an SL to register the order
+   double sl   = SLPriceFor(c); // single fixed cycle SL price, identical on every ticket
    int ticket = OrderSend(sym, cmd, lots, NormPrice(sym, reqPrice), c.maxDeviation,
                           sl, tp, MakeComment(c.id, layer), c.magic, 0, clrNONE);
    if(ticket < 0)
@@ -255,6 +280,7 @@ int OpenMarketLayer(Cycle &c, int layer)
 int PlaceLimitLayer(Cycle &c, int layer)
   {
    if(!g_masterEnabled) return(-1);
+   if(!SLConfigured(c)) return(-1);
    if(TotalLiveOrders() >= g_accountMaxOrders) return(-2);
    string sym = c.symbol;
    double lots = NormalizeLotsSym(sym, c.lots[layer] * g_lotFactor);
@@ -263,7 +289,7 @@ int PlaceLimitLayer(Cycle &c, int layer)
    // provisional formal TP using the default (assumed) spread (MT4 needs a TP)
    double tpDist = c.baseTP + (c.useSpreadInTP ? c.defaultSpread : 0);
    double tp   = NormPrice(sym, price + ProfitSign(c) * PipsToPrice(sym, tpDist));
-   double sl   = SLPriceFor(c, price); // broker requires an SL to register the order
+   double sl   = SLPriceFor(c); // single fixed cycle SL price, identical on every ticket
    int ticket = OrderSend(sym, cmd, lots, price, c.maxDeviation, sl, tp,
                           MakeComment(c.id, layer), c.magic, 0, clrNONE);
    if(ticket < 0)
@@ -301,6 +327,11 @@ bool PlaceAllPendingLimits(Cycle &c)
 //=================================================================== //
 bool StartFiltersOK(Cycle &c, string &reason)
   {
+   if(!SLConfigured(c))
+     {
+      reason = "waiting: Stop Loss price not set (mandatory)";
+      return(false);
+     }
    double spr = SpreadPips(c.symbol);
    if(c.useStartSpreadFilter && spr > c.startMaxSpread)
      {
@@ -382,7 +413,7 @@ void UpdatePendingProvisionalTPs(Cycle &c)
       if(projBE <= 0) continue;
       double tpDist = c.baseTP + (c.useSpreadInTP ? c.defaultSpread : 0.0);
       double tp     = NormPrice(c.symbol, projBE + ProfitSign(c) * tpDist * pip);
-      double sl     = SLPriceFor(c, OrderOpenPrice());
+      double sl     = SLPriceFor(c);
       if(MathAbs(OrderTakeProfit() - tp) < SymPoint(c.symbol) &&
          MathAbs(OrderStopLoss()   - sl) < SymPoint(c.symbol)) continue;
       if(!OrderModify(ticket, OrderOpenPrice(), sl, tp, 0, clrNONE))
@@ -435,8 +466,8 @@ void RecomputeTP(Cycle &c)
       if(c.layerStateArr[layer] != LS_FILLED) continue;
       if(!OrderSelect(c.layerTicket[layer], SELECT_BY_TICKET)) continue;
       if(OrderCloseTime() != 0) continue;
-      // preserve the cycle's fixed SL; (re)derive it if the order has none yet
-      double sl = (OrderStopLoss() > 0.0) ? OrderStopLoss() : SLPriceFor(c, OrderOpenPrice());
+      // the cycle's single fixed SL price is identical on every ticket and never recalculated
+      double sl = SLPriceFor(c);
       if(MathAbs(OrderTakeProfit() - tpPrice) < SymPoint(c.symbol) &&
          MathAbs(OrderStopLoss()   - sl)      < SymPoint(c.symbol)) continue;
       // validate against broker min stop distance from current market

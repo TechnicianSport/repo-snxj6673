@@ -49,10 +49,13 @@
   depends on the **Spacing** toggle (STEP = gap from the previous layer,
   ABSOLUTE = cumulative distance from the reference price).
 - **Base TP** (pips).
-- **Stop Loss (pips, per order)** — MANDATORY. Every order (market and limit)
-  is submitted with a fixed SL this many pips from its own entry, in the loss
-  direction. It cannot be 0; a blank/zero value is rejected and reset to the
-  default (50 pips).
+- **Stop Loss PRICE (per cycle)** — MANDATORY. A single fixed price level for
+  the whole cycle (e.g. LONG EURUSD `0.90000`, SHORT EURUSD `1.30000`). The EA
+  sets this same SL price on every ticket (open positions and pending limits)
+  so the basket closes server-side at that level even if the EA/terminal is
+  offline (Option A). It never recalculates. A cycle with no SL cannot trade
+  (it waits). On save, the EA warns (does not auto-correct) if the SL is not
+  safely beyond the deepest configured layer.
 - **Default spread / Max spread / Start max spread** (all pips).
 - **Swap L / S (pips/lot/night)**: signed swap rate for LONG and SHORT (e.g.
   `-7`). Only the side matching the cycle direction is used. For full accuracy

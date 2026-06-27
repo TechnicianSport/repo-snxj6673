@@ -102,14 +102,37 @@ spread recorded at its fill `s_i` (pips), across `N` open positions.
   every still-pending limit of the cycle. There is exactly one TP-recalculation
   pipeline, always triggered the same way.
 
-### Mandatory per-cycle stop-loss
-Every order — market or limit — is submitted with a fixed stop-loss placed
-`slPips` away from **its own entry price**, in the loss direction. The SL is
-fixed for the life of the cycle and is preserved on every TP `OrderModify`.
-`slPips` must be > 0; the config dialog rejects a zero/blank value and falls
-back to the default (50 pips). A single basket-wide SL price is intentionally
-NOT used, because grid layers fill at different prices and a shared SL price
-would be geometrically invalid for the deeper layers.
+### Mandatory per-cycle stop-loss (single fixed PRICE, basket stop)
+The stop-loss is a **single fixed price level per cycle**, configured once at
+setup per symbol/direction (e.g. LONG EURUSD: `0.90000`; SHORT EURUSD:
+`1.30000`). It is a worst-case account-protection stop placed far beyond where
+any layer would realistically sit. Unlike the dynamic TP, this price is the same
+for every layer and **never moves or recalculates** as layers fill; it stays
+fixed for the cycle's whole life (and its auto-restarted descendants, unless
+edited).
+
+**Implementation — Option A (chosen): broker-native per-ticket SL at one shared
+price.** MT4 has no concept of one shared SL across multiple tickets, so the EA
+sets `OrderStopLoss` on **every open position and every pending limit** of the
+cycle to that same fixed price. When price reaches the level, every ticket
+closes simultaneously via its own native server-side SL — functionally a basket
+stop. This was chosen over Option B (an EA-monitored synthetic stop that
+force-closes the basket on tick) because it is enforced **server-side** and
+therefore survives EA crashes, terminal closure and internet disconnection — the
+exact scenarios the recovery section protects against, in which a synthetic stop
+would never fire.
+
+`slPrice` must be set (> 0); a cycle with no SL cannot place any order and stays
+Waiting with a clear reason. The SL price is preserved verbatim on every TP
+`OrderModify`.
+
+**Config-time placement validation (warning, not auto-correction):** at save
+time the EA checks that the SL price is on the safe/protective side of the
+deepest configured DCA layer (for LONG, below the lowest BuyLimit; for SHORT,
+above the highest SellLimit) with a small buffer. If not, it logs a warning so
+the user can fix it — it never silently moves the user's SL. (Before the cycle
+starts, the deepest-layer price is estimated from the current market; once layer
+0 fills, the real reference price is used.)
 
 ### Not-yet-filled limits
 Because the spread/slippage at fill time is unknown, a pending limit is given a

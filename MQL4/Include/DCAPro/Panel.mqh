@@ -164,8 +164,9 @@ void BuildConfigDialog(int cid)
    UiLabel(DCA_OBJ + "l_btp", lx, ry + 4, "Base TP (pips):", C_SUB);
    UiEdit(DCA_OBJ + "e_btp", ex, ry, 90, 20, DoubleToString(c.baseTP, 2)); ry += rh;
 
-   UiLabel(DCA_OBJ + "l_sl", lx, ry + 4, "Stop Loss (pips, per order):", C_SUB);
-   UiEdit(DCA_OBJ + "e_sl", ex, ry, 90, 20, DoubleToString(c.slPips, 2)); ry += rh;
+   UiLabel(DCA_OBJ + "l_sl", lx, ry + 4, "Stop Loss PRICE (per cycle):", C_SUB);
+   UiEdit(DCA_OBJ + "e_sl", ex, ry, 90, 20,
+          (c.slPrice > 0 ? DoubleToString(c.slPrice, SymDigits(c.symbol)) : "")); ry += rh;
 
    UiLabel(DCA_OBJ + "l_dspr", lx, ry + 4, "Default spread (pips):", C_SUB);
    UiEdit(DCA_OBJ + "e_dspr", ex, ry, 90, 20, DoubleToString(c.defaultSpread, 2)); ry += rh;
@@ -325,7 +326,7 @@ void SaveConfigFromDialog(int cid)
    DeserializeLayers(g_cycles[idx], EditS("e_layers"));
    if(g_cycles[idx].layerCount < 1) g_cycles[idx].layerCount = 1;
    g_cycles[idx].baseTP         = EditD("e_btp");
-   g_cycles[idx].slPips         = EditD("e_sl");
+   g_cycles[idx].slPrice        = EditD("e_sl");
    g_cycles[idx].defaultSpread  = EditD("e_dspr");
    g_cycles[idx].maxSpread      = EditD("e_mspr");
    g_cycles[idx].startMaxSpread = EditD("e_sspr");
@@ -337,12 +338,11 @@ void SaveConfigFromDialog(int cid)
    g_cycles[idx].rocTF          = EditI("e_roctf");
    g_cycles[idx].slipTolerance  = EditD("e_slip");
    g_cycles[idx].maxDeviation   = EditI("e_dev");
-   // Stop-Loss is mandatory: every order must carry one to be accepted.
-   if(g_cycles[idx].slPips <= 0.0)
-     {
-      g_cycles[idx].slPips = 50.0;
-      DcaLog(StringFormat("cid=%d Stop Loss must be > 0; reset to default 50 pips.", cid));
-     }
+   // Stop-Loss is mandatory and is a single fixed PRICE for the whole cycle.
+   // Validate placement but only WARN (no silent auto-correction).
+   string slWarn;
+   if(!ValidateSLPlacement(g_cycles[idx], slWarn))
+      DcaLog(StringFormat("cid=%d SL warning: %s", cid, slWarn));
   }
 
 //=================================================================== //
